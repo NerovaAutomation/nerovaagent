@@ -1,0 +1,29 @@
+[
+  {
+    "guide_id": "open_contact_page",
+    "domain": "nerovaautomation.com",
+    "intent_patterns": [
+      "click contact",
+      "open contact",
+      "contact us",
+      "go to contact",
+      "open contact page",
+      "navigate to contact"
+    ],
+    "steps": [
+      {
+        "step": 1,
+        "type": "navigate",
+        "url": "https://nerovaautomation.com"
+      },
+      {
+        "step": 2,
+        "id": "ewxqnb",
+        "name": "Contact",
+        "action": "click",
+        "role": "button",
+        "selector": "div:nth-of-type(1)>div:nth-of-type(1)>button:nth-of-type(1)"
+      }
+    ]
+  }
+]

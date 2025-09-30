@@ -1,0 +1,14 @@
+# fly.toml app configuration file generated for webagent-signaler on 2025-09-29T20:05:29-04:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'webagent-signaler'
+primary_region = 'iad'
+
+[build]
+
+[[vm]]
+  memory = '2gb'
+  cpu_kind = 'shared'
+  cpus = 1

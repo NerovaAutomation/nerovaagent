@@ -1,0 +1,8 @@
+{
+  "name": "@nerova/streamer",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "nerovastream": "./bin/nerovastream.js"
+  }
+}

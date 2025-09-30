@@ -1,0 +1,53 @@
+app = "webagent-signaler"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8080"
+  TURN_PORT = "3478"
+  TURN_TLS_PORT = "5349"
+  TURN_MIN_PORT = "49152"
+  TURN_MAX_PORT = "65535"
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 8080
+
+  [[services.ports]]
+    handlers = ["tls", "http"]
+    port = 443
+
+  [[services.ports]]
+    handlers = ["tls", "http"]
+    port = 8443
+
+[[services]]
+  protocol = "udp"
+  internal_port = 3478
+
+  [[services.ports]]
+    port = 3478
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 3478
+
+  [[services.ports]]
+    port = 3478
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 5349
+
+  [[services.ports]]
+    handlers = ["tls"]
+    port = 5349
+
+[[services]]
+  protocol = "udp"
+  internal_port = 49152
+
+  [[services.ports]]
+    port_range = "49152-65535"

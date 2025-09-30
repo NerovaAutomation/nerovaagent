@@ -1,0 +1,75 @@
+{
+  "plan_id": "0bf21b69-6ae9-4b6c-ae1c-6be7d65b4869",
+  "intent": "order_chipotle_burrito_bowl_ubereats",
+  "domain": "www.ubereats.com",
+  "intent_patterns": [
+    "order burrito bowl from chipotle on uber eats",
+    "chipotle burrito bowl",
+    "uber eats chipotle order",
+    "burrito bowl white rice no beans chicken cheese",
+    "order chipotle on uber eats"
+  ],
+  "url": "https://www.ubereats.com",
+  "steps": [
+    {
+      "step": 1,
+      "type": "navigate",
+      "url": "https://www.ubereats.com"
+    },
+    {
+      "step": 2,
+      "id": "1tdu0lu",
+      "action": "click",
+      "role": "combobox",
+      "selector": "#search-suggestions-typeahead-input",
+      "ts": "2025-09-05T17:59:39.267Z"
+    },
+    {
+      "step": 3,
+      "id": "mfqzag",
+      "name": "Chipotle Mexican Grill Mexican • Healthy",
+      "action": "click",
+      "role": "link",
+      "selector": "ul:nth-of-type(1)>li:nth-of-type(1)>a:nth-of-type(1)",
+      "ts": "2025-09-05T18:00:01.277Z"
+    },
+    {
+      "step": 4,
+      "id": "wsrf1z",
+      "name": "Planet Fitness • Now",
+      "action": "click",
+      "role": "link",
+      "selector": "[data-testid='edit-delivery-location-button']",
+      "ts": "2025-09-05T18:00:27.294Z"
+    },
+    {
+      "step": 5,
+      "id": "s5ye87",
+      "name": "Done",
+      "action": "click",
+      "role": "button",
+      "selector": "[data-testid='done-button']",
+      "ts": "2025-09-05T18:01:18.858Z"
+    },
+    {
+      "step": 7,
+      "id": "1qbzr0f",
+      "name": "#1 most liked Burrito Bowl $12.55 • 82% (2051)",
+      "action": "click",
+      "role": "link",
+      "selector": "li:nth-of-type(1)>div:nth-of-type(1)>a:nth-of-type(1)",
+      "ts": "2025-09-05T18:05:33.549Z"
+    },
+    {
+      "step": 8,
+      "id": "1d01vkd",
+      "name": "Chicken 180 Cal.",
+      "action": "click",
+      "role": "generic",
+      "selector": "label:nth-of-type(1)>div:nth-of-type(2)>div:nth-of-type(1)",
+      "ts": "2025-09-05T18:06:14.569Z"
+    }
+  ],
+  "created_at": "2025-09-05T17:59:07.108Z",
+  "updated_at": "2025-09-05T18:06:14.569Z"
+}

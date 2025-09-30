@@ -1,0 +1,25 @@
+{
+  "name": "ocr-playwright-app",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node server.js",
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@playwright/test": "^1.47.2",
+    "express": "^4.19.2",
+    "ws": "^8.18.0",
+    "http-proxy": "^1.18.1",
+    "werift": "^0.15.7",
+    "wrtc": "^0.4.7",
+    "jpeg-js": "^0.4.4",
+    "jpeg-turbo": "npm:@julusian/jpeg-turbo@latest",
+    "@nerova/streamer": "file:packages/nerovastreamer",
+    "@nerova/agent": "file:packages/nerovaagent"
+  },
+  "overrides": {
+    "jpeg-turbo": "npm:@julusian/jpeg-turbo@latest"
+  }
+}

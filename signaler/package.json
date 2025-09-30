@@ -1,0 +1,15 @@
+{
+  "name": "webagent-signaler",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "jsonwebtoken": "^9.0.2",
+    "pino": "^8.19.0",
+    "ws": "^8.18.0"
+  }
+}

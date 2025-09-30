@@ -1,0 +1,23 @@
+# Node dependencies
+node_modules/
+signaler/node_modules/
+
+# Build artifacts
+/dist/
+!dist/*.md
+
+# Playwright browser downloads
+ms-playwright/
+
+# Playwright user data
+user-data/
+
+# Logs
+*.log
+logs/
+
+# OS junk
+.DS_Store
+
+# Installer staging
+/dist/stage-*/
