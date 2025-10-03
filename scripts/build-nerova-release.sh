@@ -47,7 +47,7 @@ npm install node-pre-gyp prebuild-install --no-save
 npm install --omit=dev
 
 log "Installing Playwright browsers (chromium only)"
-PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-/opt/nerova/ms-playwright}" \
+export PLAYWRIGHT_BROWSERS_PATH="$STAGING/ms-playwright"
   npx playwright install chromium
 
 log "Cleaning npm caches"
