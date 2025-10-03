@@ -8,7 +8,7 @@ ARCH_RAW=${NEROVA_ARCH:-$(uname -m)}
 ARCH=${ARCH_RAW/x86_64/amd64}
 ARCH=${ARCH/aarch64/arm64}
 ARCH=${ARCH/arm64/arm64}
-VERSION=${NEROVA_VERSION:-$(git rev-parse --short HEAD 2>/dev/null || date +%Y%m%d%H%M)}
+VERSION=${NEROVA_VERSION:-}
 VERSION_SAFE=${VERSION//\//-}
 STAGING="$DIST_DIR/stage-agent-$PLATFORM-$ARCH"
 BUNDLE_NAME="nerova-agent-${VERSION_SAFE}-${PLATFORM}-${ARCH}"
@@ -19,8 +19,13 @@ mkdir -p "$DIST_DIR"
 rm -rf "$STAGING"
 mkdir -p "$STAGING"
 
-if command -v git >/dev/null 2>&1; then
-  git config --global --add safe.directory "$ROOT_DIR" >/dev/null 2>&1 || true
+if [ -z "$VERSION" ]; then
+  if command -v git >/dev/null 2>&1; then
+    git config --global --add safe.directory "$ROOT_DIR" >/dev/null 2>&1 || true
+    VERSION=$(git -C "$ROOT_DIR" rev-parse --short HEAD 2>/dev/null || date +%Y%m%d%H%M)
+  else
+    VERSION=$(date +%Y%m%d%H%M)
+  fi
 fi
 
 log() { printf '[build-nerova] %s\n' "$*"; }
