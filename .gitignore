@@ -2,10 +2,6 @@
 node_modules/
 signaler/node_modules/
 
-# Build artifacts
-/dist/
-!dist/*.md
-
 # Playwright browser downloads
 ms-playwright/
 
@@ -19,5 +15,5 @@ logs/
 # OS junk
 .DS_Store
 
-# Installer staging
-/dist/stage-*/
+# Build artifacts
+dist/

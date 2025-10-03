@@ -6,12 +6,12 @@ DIST_DIR=${DIST_DIR:-"$ROOT_DIR/dist"}
 PLATFORM=${NEROVA_PLATFORM:-$(uname -s | tr '[:upper:]' '[:lower:]')}
 ARCH_RAW=${NEROVA_ARCH:-$(uname -m)}
 ARCH=${ARCH_RAW/x86_64/amd64}
-ARCH=${ARCH/arm64/arm64}
 ARCH=${ARCH/aarch64/arm64}
-FLAVOR=${NEROVA_FLAVOR:-full}
+ARCH=${ARCH/arm64/arm64}
 VERSION=${NEROVA_VERSION:-$(git rev-parse --short HEAD 2>/dev/null || date +%Y%m%d%H%M)}
-STAGING="$DIST_DIR/stage-$PLATFORM-$ARCH"
-BUNDLE_NAME="nerova${FLAVOR:+-$FLAVOR}-${VERSION}-${PLATFORM}-${ARCH}"
+VERSION_SAFE=${VERSION//\//-}
+STAGING="$DIST_DIR/stage-agent-$PLATFORM-$ARCH"
+BUNDLE_NAME="nerova-agent-${VERSION_SAFE}-${PLATFORM}-${ARCH}"
 OUTPUT_TGZ="$DIST_DIR/${BUNDLE_NAME}.tar.gz"
 SELF_EXTRACT="$DIST_DIR/${BUNDLE_NAME}.sh"
 
@@ -34,7 +34,6 @@ rsync -a --delete \
 pushd "$STAGING" >/dev/null
 
 log "Installing npm dependencies (omit dev)"
-# Ensure tools required by wrtc are present
 npm install node-pre-gyp prebuild-install --no-save
 npm install --omit=dev
 
@@ -46,7 +45,6 @@ log "Cleaning npm caches"
 rm -rf node_modules/.cache || true
 rm -rf .npm || true
 
-# Bundle Node runtime so the installer works on hosts without global Node
 NODE_SRC=${NEROVA_NODE_BIN:-$(command -v node)}
 if [ ! -x "$NODE_SRC" ]; then
   echo "Unable to locate node binary. Set NEROVA_NODE_BIN to the Node executable you want packaged." >&2
@@ -55,31 +53,26 @@ fi
 mkdir -p vendor
 cp "$NODE_SRC" vendor/node
 
-# Create thin CLI shims that pin to the bundled Node binary
 mkdir -p bin
-if [ "$FLAVOR" != "streamer" ]; then
 cat <<'SH' > bin/nerovaagent
 #!/usr/bin/env bash
 set -euo pipefail
-ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+resolve_root() {
+  local src="${BASH_SOURCE[0]}"
+  while [ -h "$src" ]; do
+    local dir
+    dir=$(cd -P "$(dirname "$src")" && pwd)
+    src=$(readlink "$src")
+    [[ $src != /* ]] && src="$dir/$src"
+  done
+  cd -P "$(dirname "$src")/.." && pwd
+}
+ROOT_DIR=$(resolve_root)
 "$ROOT_DIR/vendor/node" "$ROOT_DIR/packages/nerovaagent/bin/nerovaagent.js" "$@"
 SH
 chmod +x bin/nerovaagent
-else
-rm -rf packages/nerovaagent
-fi
 
-if [ "$FLAVOR" != "agent" ]; then
-cat <<'SH' > bin/nerovastream
-#!/usr/bin/env bash
-set -euo pipefail
-ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-"$ROOT_DIR/vendor/node" "$ROOT_DIR/packages/nerovastreamer/bin/nerovastream.js" "$@"
-SH
-chmod +x bin/nerovastream
-else
 rm -rf packages/nerovastreamer
-fi
 
 popd >/dev/null
 
@@ -113,25 +106,13 @@ tail -n +"$PAYLOAD_LINE" "$0" > "$ARCHIVE"
 $SUDO mkdir -p "$INSTALL_DIR"
 $SUDO tar -xzf "$ARCHIVE" -C "$INSTALL_DIR"
 $SUDO mkdir -p "$BIN_DIR"
-if [ -f "$INSTALL_DIR/bin/nerovaagent" ]; then
-  $SUDO ln -sf "$INSTALL_DIR/bin/nerovaagent" "$BIN_DIR/nerovaagent"
-  $SUDO chmod +x "$INSTALL_DIR/bin/nerovaagent"
-fi
-if [ -f "$INSTALL_DIR/bin/nerovastream" ]; then
-  $SUDO ln -sf "$INSTALL_DIR/bin/nerovastream" "$BIN_DIR/nerovastream"
-  $SUDO chmod +x "$INSTALL_DIR/bin/nerovastream"
-fi
+$SUDO ln -sf "$INSTALL_DIR/bin/nerovaagent" "$BIN_DIR/nerovaagent"
+$SUDO chmod +x "$INSTALL_DIR/bin/nerovaagent"
 
-log "Nerova runtime installed to $INSTALL_DIR"
+log "Nerova agent installed to $INSTALL_DIR"
 log "Next steps:"
-if [ -f "$INSTALL_DIR/bin/nerovaagent" ]; then
-  log "  nerovaagent playwright-launch"
-  log "  nerovaagent start \"<prompt>\""
-fi
-if [ -f "$INSTALL_DIR/bin/nerovastream" ]; then
-  log "  nerovastream playwright-launch"
-  log "  nerovastream start"
-fi
+log "  nerovaagent playwright-launch"
+log "  nerovaagent start \"<prompt>\""
 
 exit 0
 SH
