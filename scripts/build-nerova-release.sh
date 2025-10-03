@@ -45,13 +45,25 @@ log "Cleaning npm caches"
 rm -rf node_modules/.cache || true
 rm -rf .npm || true
 
-NODE_SRC=${NEROVA_NODE_BIN:-$(command -v node)}
-if [ ! -x "$NODE_SRC" ]; then
-  echo "Unable to locate node binary. Set NEROVA_NODE_BIN to the Node executable you want packaged." >&2
-  exit 1
+NODE_VERSION=${NEROVA_NODE_VERSION:-v20.17.0}
+NODE_DIR="$STAGING/vendor/node"
+mkdir -p "$NODE_DIR"
+case "$PLATFORM-$ARCH" in
+  linux-amd64) NODE_TAR="node-${NODE_VERSION}-linux-x64.tar.xz" ;;
+  linux-arm64) NODE_TAR="node-${NODE_VERSION}-linux-arm64.tar.xz" ;;
+  darwin-arm64) NODE_TAR="node-${NODE_VERSION}-darwin-arm64.tar.gz" ;;
+  *) echo "Unsupported platform $PLATFORM-$ARCH" >&2; exit 1 ;;
+esac
+NODE_URL="https://nodejs.org/dist/${NODE_VERSION}/${NODE_TAR}"
+TMP_NODE="$STAGING/node.tgz"
+log "Downloading Node runtime from $NODE_URL"
+curl -fsSL "$NODE_URL" -o "$TMP_NODE"
+if [[ $NODE_TAR == *.tar.xz ]]; then
+  tar -xJf "$TMP_NODE" --strip-components=1 -C "$NODE_DIR"
+else
+  tar -xzf "$TMP_NODE" --strip-components=1 -C "$NODE_DIR"
 fi
-mkdir -p vendor
-cp "$NODE_SRC" vendor/node
+rm -f "$TMP_NODE"
 
 mkdir -p bin
 cat <<'SH' > bin/nerovaagent
@@ -68,7 +80,17 @@ resolve_root() {
   cd -P "$(dirname "$src")/.." && pwd
 }
 ROOT_DIR=$(resolve_root)
-"$ROOT_DIR/vendor/node" "$ROOT_DIR/packages/nerovaagent/bin/nerovaagent.js" "$@"
+NODE_BIN="$ROOT_DIR/vendor/node/bin/node"
+if [ ! -x "$NODE_BIN" ]; then
+  echo "Bundled Node runtime not found at $ROOT_DIR/vendor/node/bin/node" >&2
+  exit 1
+fi
+LIB_DIR="$ROOT_DIR/vendor/node/lib"
+if [ -d "$LIB_DIR" ]; then
+  export LD_LIBRARY_PATH="${LIB_DIR}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+  export DYLD_LIBRARY_PATH="${LIB_DIR}${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+fi
+"$NODE_BIN" "$ROOT_DIR/packages/nerovaagent/bin/nerovaagent.js" "$@"
 SH
 chmod +x bin/nerovaagent
 

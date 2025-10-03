@@ -34,7 +34,7 @@ jobs:
         if: matrix.platform == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y rsync xvfb ffmpeg xpra fluxbox
+          sudo apt-get install -y rsync xvfb ffmpeg xpra fluxbox xz-utils
 
       - name: Build agent bundle
         env:
@@ -42,10 +42,6 @@ jobs:
           NEROVA_PLATFORM: ${{ matrix.platform }}
           NEROVA_ARCH: ${{ matrix.arch }}
         run: |
-          if [ "${{ matrix.platform }}" = "linux" ]; then
-            sudo apt-get update
-            sudo apt-get install -y rsync xvfb ffmpeg xpra fluxbox
-          fi
           NEROVA_VERSION=$NEROVA_VERSION NEROVA_PLATFORM=$NEROVA_PLATFORM NEROVA_ARCH=$NEROVA_ARCH bash scripts/build-nerova-release.sh
 
       - name: Upload installer assets
