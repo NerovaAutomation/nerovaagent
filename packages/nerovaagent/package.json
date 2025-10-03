@@ -4,5 +4,9 @@
   "type": "module",
   "bin": {
     "nerovaagent": "./bin/nerovaagent.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "node-fetch": "^3.3.2"
   }
 }
