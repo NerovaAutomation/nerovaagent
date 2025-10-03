@@ -19,28 +19,22 @@ export NEROVA_OS="$OS"
 export NEROVA_ARCH="$ARCH"
 export NEROVA_VERSION=${NEROVA_VERSION:-latest}
 
-read -r RELEASE_TAG RELEASE_URL <<'__PY__'
-$PYTHON <<PY
+RELEASE_INFO=$($PYTHON <<'PY'
 import json, os, sys, urllib.request
-
 repo = "NerovaAutomation/nerova-runtime"
 platform = os.environ.get("NEROVA_OS")
 arch = os.environ.get("NEROVA_ARCH")
 version = os.environ.get("NEROVA_VERSION", "latest")
-
 if version == "latest":
     api_url = f"https://api.github.com/repos/{repo}/releases/latest"
 else:
     api_url = f"https://api.github.com/repos/{repo}/releases/tags/{version}"
-
 req = urllib.request.Request(api_url, headers={
     "Accept": "application/vnd.github+json",
     "User-Agent": "nerovaagent-installer"
 })
-
 with urllib.request.urlopen(req) as resp:
     data = json.load(resp)
-
 tag = data["tag_name"]
 asset_name = f"nerova-agent-{tag}-{platform}-{arch}.sh"
 for asset in data.get("assets", []):
@@ -51,7 +45,9 @@ for asset in data.get("assets", []):
 else:
     sys.exit(f"Installer {asset_name} not found in release {tag}")
 PY
-__PY__
+)
+RELEASE_TAG=$(echo "$RELEASE_INFO" | sed -n '1p')
+RELEASE_URL=$(echo "$RELEASE_INFO" | sed -n '2p')
 
 if [ -z "$RELEASE_URL" ]; then
   echo "Failed to resolve download URL" >&2
