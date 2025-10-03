@@ -19,15 +19,6 @@ mkdir -p "$DIST_DIR"
 rm -rf "$STAGING"
 mkdir -p "$STAGING"
 
-if [ -z "$VERSION" ]; then
-  if command -v git >/dev/null 2>&1; then
-    git config --global --add safe.directory "$ROOT_DIR" >/dev/null 2>&1 || true
-    VERSION=$(git -C "$ROOT_DIR" rev-parse --short HEAD 2>/dev/null || date +%Y%m%d%H%M)
-  else
-    VERSION=$(date +%Y%m%d%H%M)
-  fi
-fi
-
 log() { printf '[build-nerova] %s\n' "$*"; }
 
 log "Staging files into $STAGING"

@@ -43,14 +43,10 @@ jobs:
           NEROVA_ARCH: ${{ matrix.arch }}
         run: |
           if [ "${{ matrix.platform }}" = "linux" ]; then
-            docker run --rm \
-              -v "${PWD}":/src -w /src \
-              --platform linux/${{ matrix.docker_arch }} \
-              node:20-bullseye \
-              bash -lc 'apt-get update && apt-get install -y rsync xvfb ffmpeg xpra fluxbox && NEROVA_VERSION=$NEROVA_VERSION NEROVA_PLATFORM=$NEROVA_PLATFORM NEROVA_ARCH=$NEROVA_ARCH bash scripts/build-nerova-release.sh'
-          else
-            NEROVA_VERSION=$NEROVA_VERSION NEROVA_PLATFORM=$NEROVA_PLATFORM NEROVA_ARCH=$NEROVA_ARCH bash scripts/build-nerova-release.sh
+            sudo apt-get update
+            sudo apt-get install -y rsync xvfb ffmpeg xpra fluxbox
           fi
+          NEROVA_VERSION=$NEROVA_VERSION NEROVA_PLATFORM=$NEROVA_PLATFORM NEROVA_ARCH=$NEROVA_ARCH bash scripts/build-nerova-release.sh
 
       - name: Upload installer assets
         uses: softprops/action-gh-release@v1
