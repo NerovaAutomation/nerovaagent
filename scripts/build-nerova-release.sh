@@ -19,6 +19,10 @@ mkdir -p "$DIST_DIR"
 rm -rf "$STAGING"
 mkdir -p "$STAGING"
 
+if command -v git >/dev/null 2>&1; then
+  git config --global --add safe.directory "$ROOT_DIR" >/dev/null 2>&1 || true
+fi
+
 log() { printf '[build-nerova] %s\n' "$*"; }
 
 log "Staging files into $STAGING"
