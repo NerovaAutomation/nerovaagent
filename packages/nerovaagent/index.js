@@ -1,17 +1,19 @@
-import app from './server.js';
+import { createClient } from './lib/runtime.js';
 
-const PORT = process.env.PORT || 3333;
+const client = createClient();
 
-export function start() {
-  return new Promise((resolve) => {
-    const server = app.listen(PORT, () => {
-      resolve(server);
-    });
-  });
+export async function start() {
+  await client.ensureServer();
+  return client.config;
 }
 
+export { client };
+
 if (import.meta.main) {
-  start().then(() => {
-    console.log(`[nerovaagent] API listening on ${PORT}`);
+  start().then((config) => {
+    console.log(`[nerovaagent] runtime listening on ${config.origin}`);
+  }).catch((err) => {
+    console.error('[nerovaagent] failed to start runtime', err);
+    process.exit(1);
   });
 }

@@ -1,0 +1,74 @@
+{
+  "plan_id": "b66bcd10-7f83-4b71-8c30-9aadf6fb8c41",
+  "intent": "order_chipotle_burrito_bowl_ubereats",
+  "domain": "www.ubereats.com",
+  "intent_patterns": [
+    "order chipotle on uber eats",
+    "burrito bowl white rice no beans chicken cheese",
+    "order food delivery",
+    "order chipotle burrito bowl delivery"
+  ],
+  "url": "https://www.ubereats.com",
+  "steps": [
+    {
+      "step": 1,
+      "type": "navigate",
+      "url": "https://www.ubereats.com"
+    },
+    {
+      "step": 2,
+      "id": "1tdu0lu",
+      "action": "click",
+      "role": "combobox",
+      "selector": "#search-suggestions-typeahead-input",
+      "ts": "2025-09-05T18:17:16.208Z"
+    },
+    {
+      "step": 3,
+      "id": "mfqzag",
+      "name": "Chipotle Mexican Grill Mexican • Healthy",
+      "action": "click",
+      "role": "link",
+      "selector": "ul:nth-of-type(1)>li:nth-of-type(1)>a:nth-of-type(1)",
+      "ts": "2025-09-05T18:17:46.249Z"
+    },
+    {
+      "step": 4,
+      "id": "1qbzr0f",
+      "name": "#1 most liked Burrito Bowl $12.55 • 82% (2051)",
+      "action": "click",
+      "role": "link",
+      "selector": "li:nth-of-type(1)>div:nth-of-type(1)>a:nth-of-type(1)",
+      "ts": "2025-09-05T18:18:34.852Z"
+    },
+    {
+      "step": 5,
+      "id": "hzod0w",
+      "name": "#1, Ordered by 10+ others White Rice, Chips, Chicken: Extra Portion, Extra Steak; ; No Beans, Cheese, Romaine Lettuce",
+      "action": "click",
+      "role": "generic",
+      "selector": "div:nth-of-type(6)>ul:nth-of-type(1)>li:nth-of-type(1)",
+      "ts": "2025-09-05T18:19:01.160Z"
+    },
+    {
+      "step": 6,
+      "id": "hzod0w",
+      "name": "#1, Ordered by 10+ others White Rice, Chips, Chicken: Extra Portion, Extra Steak; ; No Beans, Cheese, Romaine Lettuce",
+      "action": "click",
+      "role": "generic",
+      "selector": "div:nth-of-type(6)>ul:nth-of-type(1)>li:nth-of-type(1)",
+      "ts": "2025-09-05T18:19:36.923Z"
+    },
+    {
+      "step": 7,
+      "id": "1d01vkd",
+      "name": "Chicken 180 Cal.",
+      "action": "click",
+      "role": "generic",
+      "selector": "label:nth-of-type(1)>div:nth-of-type(2)>div:nth-of-type(1)",
+      "ts": "2025-09-05T18:20:12.541Z"
+    }
+  ],
+  "created_at": "2025-09-05T18:16:41.716Z",
+  "updated_at": "2025-09-05T18:20:12.541Z"
+}

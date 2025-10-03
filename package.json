@@ -4,10 +4,12 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@julusian/jpeg-turbo": "latest",
+    "@nerova/agent": "file:packages/nerovaagent",
     "@playwright/test": "^1.47.2",
-    "body-parser": "^1.20.2",
     "express": "^4.19.2",
-    "node-fetch": "^3.3.2",
-    "@nerova/agent": "file:packages/nerovaagent"
+    "http-proxy": "^1.18.1",
+    "jpeg-js": "^0.4.4",
+    "ws": "^8.18.0"
   }
 }

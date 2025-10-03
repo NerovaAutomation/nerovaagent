@@ -6,7 +6,10 @@
     "nerovaagent": "./bin/nerovaagent.js"
   },
   "dependencies": {
+    "@julusian/jpeg-turbo": "latest",
     "express": "^4.19.2",
-    "node-fetch": "^3.3.2"
+    "http-proxy": "^1.18.1",
+    "jpeg-js": "^0.4.4",
+    "ws": "^8.18.0"
   }
 }

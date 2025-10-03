@@ -1,16 +1,9 @@
 #!/usr/bin/env node
 import { readFileSync } from 'fs';
-import { start } from '../index.js';
+import { createClient } from '../lib/runtime.js';
 
 const args = process.argv.slice(2);
-let serverStarted = false;
-
-async function ensureServer() {
-  if (!serverStarted) {
-    await start();
-    serverStarted = true;
-  }
-}
+const client = createClient();
 
 function printHelp() {
   console.log(`nerovaagent commands:\n  playwright-launch      Ensure the local Playwright runtime is warmed up\n  start <prompt|string>  Kick off a run with the given prompt\n  start --prompt-file <path>   Read prompt from a file\n  status                 Fetch runtime status\n  help                   Show this message\n`);
@@ -36,29 +29,7 @@ function parseArgs(argv) {
 }
 
 async function callRuntime(pathname, { method = 'GET', body } = {}) {
-  await ensureServer();
-  const base = process.env.NEROVA_AGENT_HTTP || 'http://127.0.0.1:3333';
-  const url = new URL(pathname, base);
-  const headers = { 'Content-Type': 'application/json' };
-  const machineId = process.env.FLY_MACHINE_ID;
-  if (machineId) headers['Fly-Machine'] = machineId;
-  const init = { method, headers };
-  if (body !== undefined) {
-    init.body = typeof body === 'string' ? body : JSON.stringify(body);
-  }
-  const res = await fetch(url, init);
-  const text = await res.text();
-  let data = null;
-  if (text) {
-    try { data = JSON.parse(text); } catch { data = text; }
-  }
-  if (!res.ok) {
-    const err = new Error(`Request failed: ${res.status}`);
-    err.status = res.status;
-    err.data = data;
-    throw err;
-  }
-  return data;
+  return client.request(pathname, { method, body });
 }
 
 async function handleStart(options) {
