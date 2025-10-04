@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { readFileSync } from 'fs';
 import { createClient } from '../lib/runtime.js';
+import { ensureAgentDaemon } from '../lib/agent-manager.js';
 
 const args = process.argv.slice(2);
 const client = createClient();
@@ -46,6 +47,7 @@ async function handleStart(options) {
   }
   const payload = { prompt: prompt.trim() };
   try {
+    await ensureAgentDaemon({ origin: client.config.origin });
     const result = await callRuntime('/run/start', { method: 'POST', body: payload });
     console.log('Agent started:', JSON.stringify(result));
   } catch (err) {
@@ -59,6 +61,7 @@ async function handleStart(options) {
 
 async function handlePlaywrightLaunch() {
   try {
+    await ensureAgentDaemon({ origin: client.config.origin });
     const result = await callRuntime('/runtime/playwright/launch', { method: 'POST' });
     console.log('Playwright ready:', JSON.stringify(result));
   } catch (err) {
@@ -83,6 +86,9 @@ async function handleStatus() {
 async function main() {
   const options = parseArgs(args.slice(1));
   switch (args[0]) {
+    case 'agent-daemon':
+      await import('../lib/agent-daemon.js');
+      break;
     case 'playwright-launch':
       await handlePlaywrightLaunch();
       break;
