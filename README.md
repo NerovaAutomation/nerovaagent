@@ -15,7 +15,11 @@ curl -fsSL https://install.nerova.run/agent | bash
 ```
 
 By default installs into `/opt/nerova` and symlinks `nerovaagent` into
-`/usr/local/bin`. To install without sudo:
+`/usr/local/bin`. The CLI now targets the hosted runtime at
+`http://ec2-54-227-111-189.compute-1.amazonaws.com:3333`. To point it elsewhere,
+set `NEROVA_AGENT_HTTP` before running commands.
+
+To install without sudo:
 
 ```bash
 NEROVA_HOME="$HOME/.nerova" \

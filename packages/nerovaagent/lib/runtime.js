@@ -10,13 +10,24 @@ const APP_ROOT = path.resolve(PACKAGE_ROOT, '..', '..');
 const SERVER_ENTRY = path.join(PACKAGE_ROOT, 'server.js');
 const RUN_DIR = path.join(APP_ROOT, 'run');
 const PID_FILE = path.join(RUN_DIR, 'nerovaagent.pid');
+// Default to the universal AWS backend so CLI users immediately talk to the hosted runtime.
+// Override by setting NEROVA_AGENT_HTTP or NEROVA_AGENT_REMOTE_DEFAULT when developing locally.
+const DEFAULT_REMOTE_ORIGIN = (process.env.NEROVA_AGENT_REMOTE_DEFAULT
+  || process.env.NEROVA_AGENT_DEFAULT_ORIGIN
+  || 'http://ec2-54-227-111-189.compute-1.amazonaws.com:3333').trim();
 const MACHINE_HEADER = process.env.FLY_MACHINE_ID ? { 'Fly-Machine': process.env.FLY_MACHINE_ID } : null;
 
 export function resolveConfig(overrides = {}) {
   const defaultPort = Number(process.env.NEROVA_AGENT_PORT || process.env.PORT || overrides.port || 3333);
+  const candidateOrigin = (() => {
+    if (overrides.baseUrl) return overrides.baseUrl;
+    if (process.env.NEROVA_AGENT_HTTP) return process.env.NEROVA_AGENT_HTTP;
+    if (DEFAULT_REMOTE_ORIGIN) return DEFAULT_REMOTE_ORIGIN;
+    return `http://127.0.0.1:${defaultPort}`;
+  })();
   let baseUrl;
   try {
-    baseUrl = new URL(process.env.NEROVA_AGENT_HTTP || overrides.baseUrl || `http://127.0.0.1:${defaultPort}`);
+    baseUrl = new URL(candidateOrigin);
   } catch {
     baseUrl = new URL(`http://127.0.0.1:${defaultPort}`);
   }
