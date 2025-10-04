@@ -1,0 +1,930 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WebRTC Remote View</title>
+  <style>
+    body { margin:0; background:#000; color:#fff; font:14px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; display:flex; flex-direction:column; gap:8px; padding:8px; overflow:hidden; }
+    #bar { display:flex; gap:8px; align-items:center; }
+    /* Default video layout; will be overridden to exact server viewport size after connect */
+    #vid { width: auto; height: auto; background:#111; border:0; border-radius:0; display:block; }
+    button { padding:8px 10px; border-radius:6px; border:1px solid #333; background:#1a1a1a; color:#fff; cursor:pointer; }
+    #log { white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background:#0a0a0a; padding:8px; border-radius:6px; border:1px solid #222; max-height:160px; overflow:auto; }
+    body.bare { padding:0; gap:0; height:100vh; align-items:center; justify-content:center; }
+    body.bare-chrome #bar,
+    body.bare-chrome #log { display:none !important; }
+    body.embed #vid { width:100%; height:100%; max-width:100%; max-height:100%; object-fit:contain; cursor:default; pointer-events:none; }
+    body.viewer #vid { width:100%; height:100%; max-width:100%; max-height:100%; object-fit:contain; cursor:crosshair; pointer-events:auto; }
+  </style>
+  </head>
+  <body>
+    <div id="bar">
+      <input id="machineIdInput" placeholder="Machine ID" style="width:200px;" />
+      <input id="signalUrlInput" placeholder="Signaling URL (wss://...)" style="width:240px;" />
+      <input id="signalTokenInput" placeholder="Token" style="width:240px;" />
+      <button id="btn">Connect</button>
+      <button id="btnInteract" disabled>Interact: Off</button>
+      <input id="typeBox" placeholder="Type text…" style="display:none; width:240px;" />
+      <button id="btnType" style="display:none;">Send</button>
+      <button id="btnEnter" style="display:none;">Enter</button>
+      <button id="btnStats" disabled>Stats</button>
+      <button id="btnGrid" style="display:none;">Grid</button>
+      <button id="btnServerGrid" style="display:none;">Server Grid</button>
+      <button id="btnTest" style="display:none;">Test</button>
+      <button id="btnDimensions" style="display:none;">Check Dims</button>
+      <span id="status">idle</span>
+      <span id="dimensions" style="margin-left:10px; font-size:12px; color:#0f0;"></span>
+      <span style="margin-left:auto; font-size:12px; opacity:0.7;">
+        Alt+G grid | Alt+S server grid | Alt+T test | Alt+M markers
+      </span>
+    </div>
+    <video id="vid" autoplay playsinline muted style="cursor: crosshair;"></video>
+    <div id="log"></div>
+    <script>
+      let qp;
+      try { qp = new URLSearchParams(location.search); } catch { qp = new URLSearchParams(); }
+      const modeParamRaw = qp ? qp.get('mode') : null;
+      const modeParam = (modeParamRaw || '').toLowerCase();
+      const embedRequested = (() => {
+        try {
+          if (!qp || !qp.has('embed')) return false;
+          const raw = qp.get('embed');
+          if (!raw) return true;
+          return /^(1|true|yes|embed)$/i.test(raw);
+        } catch { return false; }
+      })();
+      const embedMode = modeParam === 'embed' || (!modeParam && embedRequested);
+      const viewerMode = modeParam === 'viewer';
+      const machineInput = document.getElementById('machineIdInput');
+      const signalUrlInput = document.getElementById('signalUrlInput');
+      const signalTokenInput = document.getElementById('signalTokenInput');
+      let machineId = (qp && qp.get('fly_machine')) || localStorage.getItem('viewerMachineId') || '';
+      let signalingUrl = (qp && qp.get('signal_url')) || localStorage.getItem('viewerSignalUrl') || '';
+      let signalToken = (qp && (qp.get('signal_token') || qp.get('token'))) || localStorage.getItem('viewerSignalToken') || '';
+      let presetIce = null;
+      try {
+        const rawIce = qp && qp.get('ice');
+        if (rawIce) presetIce = JSON.parse(rawIce);
+        if (!presetIce) {
+          const savedIce = localStorage.getItem('viewerIceServers');
+          if (savedIce) presetIce = JSON.parse(savedIce);
+        }
+      } catch {}
+      if (!signalingUrl) signalingUrl = 'wss://webagent-signaler.fly.dev/signal';
+      let streamReady = false;
+      if (machineInput) machineInput.value = machineId;
+      if (signalUrlInput) signalUrlInput.value = signalingUrl;
+      if (signalTokenInput) signalTokenInput.value = signalToken;
+      const refreshChrome = () => {
+        const hideChrome = (embedMode || viewerMode) && streamReady;
+        document.body.classList.toggle('bare-chrome', hideChrome);
+      };
+      refreshChrome();
+      machineInput?.addEventListener('input', () => {
+        machineId = machineInput.value.trim();
+        refreshChrome();
+      });
+      signalUrlInput?.addEventListener('input', () => {
+        signalingUrl = signalUrlInput.value.trim();
+        resetSignalSocket();
+      });
+      signalTokenInput?.addEventListener('input', () => {
+        signalToken = signalTokenInput.value.trim();
+        resetSignalSocket();
+      });
+      machineInput?.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter') {
+          ev.preventDefault();
+          connect();
+        }
+      });
+      signalTokenInput?.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter') {
+          ev.preventDefault();
+          connect();
+        }
+      });
+      if (embedMode || viewerMode) {
+        document.body.classList.add('bare');
+      }
+      if (embedMode) {
+        document.body.classList.add('embed');
+      }
+      if (viewerMode) {
+        document.body.classList.add('viewer');
+      }
+      const logEl = document.getElementById('log');
+      const statusEl = document.getElementById('status');
+      const videoEl = document.getElementById('vid');
+      const btnStats = document.getElementById('btnStats');
+      const pathWithMachine = (path) => {
+        if (!machineId) return path;
+        return `${path}${path.includes('?') ? '&' : '?'}fly_machine=${encodeURIComponent(machineId)}`;
+      };
+      const headersWithMachine = (extra) => {
+        const headers = new Headers(extra || {});
+        if (machineId) headers.set('Fly-Machine', machineId);
+        return headers;
+      };
+      let control = null;
+      function log(s){
+        try {
+          const t = new Date().toISOString();
+          logEl.textContent = `[client ${t}] ${s}\n` + logEl.textContent;
+        } catch {}
+      }
+
+      let signalWs = null;
+      let signalReady = false;
+      const signalPending = new Map();
+      const signalQueue = [];
+      let signalCounter = 0;
+
+      function resetSignalSocket(){
+        signalReady = false;
+        try { if (signalWs) signalWs.close(); } catch {}
+        signalWs = null;
+        for (const [, reject] of signalPending.values()) {
+          try { reject(new Error('signal_connection_reset')); } catch {}
+        }
+        signalPending.clear();
+      }
+
+      function ensureSignalSocket(){
+        if (!signalingUrl || !signalToken) return null;
+        if (signalWs && (signalWs.readyState === WebSocket.OPEN || signalWs.readyState === WebSocket.CONNECTING)) {
+          return signalWs;
+        }
+        resetSignalSocket();
+        try {
+          const url = `${signalingUrl}${signalingUrl.includes('?') ? '&' : '?'}token=${encodeURIComponent(signalToken)}`;
+          signalWs = new WebSocket(url);
+        } catch (err) {
+          console.error('[signal] ws create error', err);
+          return null;
+        }
+        signalWs.addEventListener('open', () => {
+          signalReady = false;
+        });
+        signalWs.addEventListener('message', (ev) => {
+          let msg;
+          try { msg = JSON.parse(ev.data); } catch { return; }
+          if (msg.type === 'ready') {
+            signalReady = true;
+            while (signalQueue.length) {
+              try { signalWs.send(JSON.stringify(signalQueue.shift())); } catch {}
+            }
+            return;
+          }
+          if (msg.type === 'pong') return;
+          if (msg.type === 'response' && msg.id) {
+            const pending = signalPending.get(msg.id);
+            if (pending) {
+              signalPending.delete(msg.id);
+              const { resolve, reject } = pending;
+              if (msg.ok) resolve(msg);
+              else {
+                const err = new Error(msg.error || 'signal_error');
+                err.status = msg.status;
+                reject(err);
+              }
+            }
+          }
+        });
+        signalWs.addEventListener('close', () => {
+          signalReady = false;
+          for (const [, reject] of signalPending.values()) {
+            try { reject(new Error('signal_connection_closed')); } catch {}
+          }
+          signalPending.clear();
+        });
+        signalWs.addEventListener('error', (err) => {
+          console.warn('[signal] ws error', err);
+        });
+        return signalWs;
+      }
+
+      function ensureSignalReady(){
+        return new Promise((resolve, reject) => {
+          const ws = ensureSignalSocket();
+          if (!ws) {
+            reject(new Error('signal_not_configured'));
+            return;
+          }
+          if (signalReady && ws.readyState === WebSocket.OPEN) {
+            resolve(ws);
+            return;
+          }
+          const check = () => {
+            if (signalReady && ws.readyState === WebSocket.OPEN) {
+              resolve(ws);
+              return;
+            }
+            if (ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+              reject(new Error('signal_connection_failed'));
+              return;
+            }
+            setTimeout(check, 50);
+          };
+          setTimeout(check, 10);
+        });
+      }
+
+      async function signalRequest(method, path, body, headers){
+        const ws = await ensureSignalReady();
+        const id = `req-${Date.now()}-${++signalCounter}`;
+        const payload = { id, type: 'request', method, path, body, headers };
+        return new Promise((resolve, reject) => {
+          signalPending.set(id, { resolve, reject });
+          const message = JSON.stringify(payload);
+          if (signalReady && ws.readyState === WebSocket.OPEN) {
+            try { ws.send(message); } catch (err) { signalPending.delete(id); reject(err); }
+          } else {
+            signalQueue.push(payload);
+          }
+          setTimeout(() => {
+            if (signalPending.has(id)) {
+              signalPending.delete(id);
+              reject(new Error('signal_timeout'));
+            }
+          }, 10000);
+        });
+      }
+
+      // WS for interaction
+      let ws = null; let wsReady = false; const wsQ = [];
+      function ensureWS(){
+        if (ws && (ws.readyState===1 || wsReady)) return;
+        try { if (ws) ws.close(); } catch {}
+        const base = (location.protocol==='https:'?'wss://':'ws://') + location.host;
+        const target = machineId ? `${base}?fly_machine=${encodeURIComponent(machineId)}` : base;
+        ws = new WebSocket(target);
+        wsReady = false;
+        ws.addEventListener('open', () => {
+          wsReady = true;
+          while (wsQ.length) {
+            try { ws.send(JSON.stringify(wsQ.shift())); } catch {}
+          }
+        });
+      }
+      function sendWS(obj){
+        try {
+          if (!wsReady) {
+            ensureWS();
+            wsQ.push(obj);
+            return;
+          }
+          ws.send(JSON.stringify(obj));
+        } catch {}
+      }
+
+      async function getIceConfig(){
+        if (presetIce && Array.isArray(presetIce) && presetIce.length) {
+          return { iceServers: presetIce };
+        }
+        if (signalingUrl && signalToken) {
+          try {
+            const resp = await signalRequest('GET', '/webrtc/config');
+            const body = resp && resp.body ? resp.body : null;
+            if (body && Array.isArray(body.iceServers)) {
+              presetIce = body.iceServers;
+              try { localStorage.setItem('viewerIceServers', JSON.stringify(presetIce)); } catch {}
+              return { iceServers: presetIce };
+            }
+          } catch (e) {
+            log('config signal error: ' + (e.message||e));
+          }
+        }
+        try {
+          const r = await fetch(pathWithMachine('/webrtc/config'), { headers: headersWithMachine() });
+          const j = await r.json();
+          log('config: ' + JSON.stringify(j));
+          if (j && Array.isArray(j.iceServers)) {
+            presetIce = j.iceServers;
+            try { localStorage.setItem('viewerIceServers', JSON.stringify(presetIce)); } catch {}
+            return { iceServers: j.iceServers };
+          }
+        } catch (e) {
+          log('config fetch error: ' + (e.message||e));
+        }
+        return { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+      }
+
+      async function connect(){
+        if (!machineId) {
+          statusEl.textContent = 'missing-machine';
+          log('Machine id required before connect');
+          return;
+        }
+        if (!signalingUrl || !signalToken) {
+          statusEl.textContent = 'missing-signal';
+          log('Signaling URL and token required');
+          return;
+        }
+        try { localStorage.setItem('viewerMachineId', machineId); } catch {}
+        try { localStorage.setItem('viewerSignalUrl', signalingUrl); } catch {}
+        try { localStorage.setItem('viewerSignalToken', signalToken); } catch {}
+        streamReady = false;
+        refreshChrome();
+        log('Connecting to machine ' + machineId);
+        log('Signal endpoint: ' + signalingUrl);
+        statusEl.textContent = 'connecting';
+        const pcCfg = await getIceConfig();
+        const pc = new RTCPeerConnection(pcCfg);
+        window.__pc = pc; // expose for debugging
+
+        // Debug event hooks
+        pc.addEventListener('icegatheringstatechange', ()=> log('iceGatheringState=' + pc.iceGatheringState));
+        pc.addEventListener('iceconnectionstatechange', ()=> log('iceConnectionState=' + pc.iceConnectionState));
+        pc.addEventListener('connectionstatechange', () => {
+          const state = pc.connectionState;
+          log('connectionState=' + state);
+          if (state === 'failed' || state === 'disconnected' || state === 'closed') {
+            streamReady = false;
+            refreshChrome();
+          }
+        });
+        pc.addEventListener('signalingstatechange', ()=> log('signalingState=' + pc.signalingState));
+        pc.addEventListener('track', (ev) => {
+          log('ontrack kind=' + (ev.track && ev.track.kind) + ' streams=' + ev.streams.length);
+          const [stream] = ev.streams;
+          if (stream) {
+            videoEl.srcObject = stream;
+            statusEl.textContent = machineId ? `streaming:${machineId.slice(0, 8)}` : 'streaming';
+          }
+        });
+
+        // Control DataChannel (client -> server)
+        try {
+          control = pc.createDataChannel('control');
+          control.onopen = ()=>{ try { document.getElementById('btnInteract').disabled = false; } catch{} };
+          control.onclose = ()=>{ try { document.getElementById('btnInteract').disabled = true; } catch{} };
+        } catch {}
+
+        // Request to receive a video track (no datachannel frames)
+        try { pc.addTransceiver('video', { direction: 'recvonly' }); } catch (e) { log('addTransceiver error: ' + (e.message||e)); }
+
+        // SDP flow without trickle: wait for local gather to complete to reduce glare with server
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        log('local offer len=' + (pc.localDescription?.sdp?.length || 0));
+
+        // Simple gather wait with timeout
+        await new Promise((resolve)=>{
+          const t0 = Date.now();
+          const tid = setInterval(()=>{
+            if (pc.iceGatheringState === 'complete' || Date.now() - t0 > 3000) { clearInterval(tid); resolve(); }
+          }, 50);
+        });
+
+        const payload = { offer: pc.localDescription };
+        let j = null;
+        try {
+          const resp = await signalRequest('POST', '/webrtc/offer', payload);
+          j = resp && resp.body ? resp.body : null;
+        } catch (err) {
+          log('signal offer error: ' + (err.message || err));
+        }
+        if (!j) {
+          const r = await fetch(pathWithMachine('/webrtc/offer'), { method:'POST', headers: headersWithMachine({'Content-Type':'application/json'}), body: JSON.stringify(payload) });
+          j = await r.json();
+        }
+        log('answer debug: ' + JSON.stringify(j && j.debug || {}));
+        // If server provides the final stream size, save it and lock video CSS to it early
+        // THIS IS THE TRUE SIZE OF THE VIDEO STREAM
+        try {
+          const sz = j && j.debug && j.debug.video;
+          if (sz && sz.width && sz.height) {
+            // Update serverViewport with the EXACT stream dimensions from the server
+            serverViewport.w = sz.width;
+            serverViewport.h = sz.height;
+            window.serverViewport = serverViewport;
+            window.streamDimensions = { w: sz.width, h: sz.height };
+            log('CRITICAL: Server stream dimensions: ' + sz.width + 'x' + sz.height);
+            videoEl.style.width = sz.width + 'px';
+            videoEl.style.height = sz.height + 'px';
+            videoEl.style.maxWidth = 'none';
+            videoEl.style.maxHeight = 'none';
+            videoEl.style.aspectRatio = '';
+            videoEl.style.objectFit = 'fill'; // Use fill to ensure no scaling
+          }
+        } catch {}
+        if (!j || !j.answer || !j.answer.sdp) { statusEl.textContent = 'error'; log('bad answer: ' + JSON.stringify(j||{})); return; }
+        await pc.setRemoteDescription(j.answer);
+        streamReady = true;
+        refreshChrome();
+        statusEl.textContent = machineId ? `connected:${machineId.slice(0, 8)}` : 'connected';
+        ensureWS();
+
+        // Fetch server viewport - DO NOT assume 1280x720
+        let serverViewport = null;
+        try {
+        const vr = await fetch(pathWithMachine('/webrtc/viewport'), { headers: headersWithMachine() });
+          const vj = await vr.json();
+          if (vj && vj.ok) {
+            serverViewport = { w: vj.width, h: vj.height, scale: vj.scale||1 };
+          }
+        } catch {}
+        window.serverViewport = serverViewport; log('server viewport: '+JSON.stringify(serverViewport));
+
+        // After metadata, set video element to match the actual video stream dimensions
+        videoEl.addEventListener('loadedmetadata', () => {
+          try {
+            // Use the intrinsic video dimensions - these are the EXACT stream dimensions
+            const vw = videoEl.videoWidth;
+            const vh = videoEl.videoHeight;
+            
+            if (vw && vh) {
+              window.actualVideoDimensions = { w: vw, h: vh };
+              log('VIDEO STREAM EXACT DIMENSIONS: ' + vw + 'x' + vh);
+              
+              if (embedMode || viewerMode) {
+                // Fill container while preserving aspect ratio
+                videoEl.style.width = '100%';
+                videoEl.style.height = '100%';
+                videoEl.style.maxWidth = '100%';
+                videoEl.style.maxHeight = '100%';
+                videoEl.style.aspectRatio = '';
+                videoEl.style.objectFit = 'contain';
+                videoEl.style.pointerEvents = embedMode ? 'none' : 'auto';
+                videoEl.style.cursor = embedMode ? 'default' : 'crosshair';
+              } else {
+                // Set video element to exact stream size with no scaling
+                videoEl.style.width = vw + 'px';
+                videoEl.style.height = vh + 'px';
+                videoEl.style.maxWidth = 'none';
+                videoEl.style.maxHeight = 'none';
+                videoEl.style.aspectRatio = '';
+                videoEl.style.objectFit = 'fill';
+              }
+              
+              // Update mapping dimensions
+              if (!window.streamDimensions) {
+                window.streamDimensions = { w: vw, h: vh };
+              }
+              
+              log('Video element sized to exact stream dimensions: ' + vw + 'x' + vh);
+            }
+            
+            // Double-check actual rendered size and update display
+            setTimeout(() => {
+              const rect = videoEl.getBoundingClientRect();
+              log('Video element rendered at: ' + Math.round(rect.width) + 'x' + Math.round(rect.height) + ' position (' + Math.round(rect.left) + ',' + Math.round(rect.top) + ')');
+              if (Math.round(rect.width) !== vw || Math.round(rect.height) !== vh) {
+                log('WARNING: Video element size mismatch! Expected ' + vw + 'x' + vh + ' but got ' + Math.round(rect.width) + 'x' + Math.round(rect.height));
+              }
+              // Update dimensions display
+              const dimsEl = document.getElementById('dimensions');
+              if (dimsEl) {
+                dimsEl.textContent = 'Stream: ' + vw + 'x' + vh + ' | Display: ' + Math.round(rect.width) + 'x' + Math.round(rect.height);
+              }
+            }, 100);
+          } catch {}
+        });
+
+        // No fallback: VP8/H.264 only
+
+        btnStats.disabled = false;
+        btnStats.onclick = async () => {
+          try {
+            const stats = await pc.getStats();
+            const out = [];
+            stats.forEach((v,k)=>{ out.push([k,v.type,v.kind,v.ssrc,v.bytesReceived,v.framesDecoded,v.jitter,v.packetsLost]); });
+            log('stats: ' + JSON.stringify(out.slice(-20)));
+          } catch (e) { log('stats error: ' + (e.message||e)); }
+        };
+        // Enable interact and debug buttons after we know video dims
+        videoEl.addEventListener('loadedmetadata', ()=>{ 
+          try { 
+            document.getElementById('btnInteract').disabled = false;
+            document.getElementById('btnGrid').style.display = '';
+            document.getElementById('btnServerGrid').style.display = '';
+            document.getElementById('btnTest').style.display = '';
+            document.getElementById('btnDimensions').style.display = '';
+          } catch {} 
+        });
+      }
+
+      document.getElementById('btn').onclick = () => {
+        const inputVal = machineInput ? machineInput.value.trim() : '';
+        if (inputVal) {
+          machineId = inputVal;
+          localStorage.setItem('viewerMachineId', machineId);
+        }
+        if (signalUrlInput) {
+          const val = signalUrlInput.value.trim();
+          if (val) {
+            signalingUrl = val;
+            localStorage.setItem('viewerSignalUrl', signalingUrl);
+            resetSignalSocket();
+          }
+        }
+        if (signalTokenInput) {
+          const val = signalTokenInput.value.trim();
+          if (val) {
+            signalToken = val;
+            localStorage.setItem('viewerSignalToken', signalToken);
+            resetSignalSocket();
+          }
+        }
+        if (!machineId) {
+          alert('Enter machine id');
+          statusEl.textContent = 'missing-machine';
+          return;
+        }
+        if (!signalingUrl || !signalToken) {
+          alert('Provide signaling URL and token');
+          statusEl.textContent = 'missing-signal';
+          return;
+        }
+        refreshChrome();
+        connect();
+      };
+      // Auto-connect when requested via query param (?autoconnect=1) or when embedded/viewer
+      try {
+        const ac = qp && qp.get('autoconnect');
+        if ((ac && /^(1|true|yes)$/i.test(ac)) || embedMode || viewerMode) {
+          if (machineId && signalingUrl && signalToken) {
+            localStorage.setItem('viewerMachineId', machineId);
+            refreshChrome();
+            setTimeout(connect, 0);
+          }
+        }
+      } catch {}
+
+      // Interact controls
+      const btnInteract = document.getElementById('btnInteract');
+      const typeBox = document.getElementById('typeBox');
+      const btnType = document.getElementById('btnType');
+      const btnEnter = document.getElementById('btnEnter');
+      let interacting = false;
+      function setInteract(on){
+        interacting = !!on;
+        btnInteract.textContent = 'Interact: ' + (interacting?'On':'Off');
+        typeBox.style.display = interacting ? '' : 'none';
+        btnType.style.display = interacting ? '' : 'none';
+        btnEnter.style.display = interacting ? '' : 'none';
+      }
+      btnInteract.onclick = ()=> setInteract(!interacting);
+      if (viewerMode) {
+        setInteract(true);
+      }
+      function sendControl(name, payload){
+        try {
+          if (control && control.readyState==='open') { control.send(JSON.stringify({ t: name, ...(payload||{}) })); return; }
+          // fallback to WS if DC not ready
+          const map = { TYPE_TEXT:'TYPE_TEXT', PRESS_ENTER:'PRESS_ENTER', PRESS_KEY:'PRESS_KEY', CLICK_VIEWPORT:'CLICK_VIEWPORT', SCROLL_DIR:'SCROLL_DIR' };
+          const type = map[name] || name; sendWS({ type, ...(payload||{}) });
+        } catch {}
+      }
+      btnType.onclick = ()=>{ const t=(typeBox.value||''); if(t) sendControl('TYPE_TEXT', { text:t, delay:30 }); };
+      btnEnter.onclick = ()=> sendControl('PRESS_ENTER');
+      
+      // Debug button handlers
+      document.getElementById('btnGrid').onclick = () => {
+        const result = window.showGrid();
+        log(result);
+      };
+      
+      document.getElementById('btnServerGrid').onclick = async () => {
+        try {
+        const response = await fetch(pathWithMachine('/webrtc/grid'), { headers: headersWithMachine() });
+          const result = await response.json();
+          if (result.created) {
+            log('Server grid shown (red lines with coordinates)');
+          } else if (result.removed) {
+            log('Server grid removed');
+          }
+        } catch (e) {
+          log('Failed to toggle server grid: ' + e.message);
+        }
+      };
+      
+      document.getElementById('btnTest').onclick = () => {
+        window.testMapping();
+      };
+      
+      document.getElementById('btnDimensions').onclick = async () => {
+        try {
+        const response = await fetch(pathWithMachine('/webrtc/dimensions'), { headers: headersWithMachine() });
+          const data = await response.json();
+          log('=== SERVER DIMENSIONS ===');
+          log('Playwright viewport: ' + JSON.stringify(data.playwright?.viewport));
+          log('Browser window: inner=' + data.browser?.innerWidth + 'x' + data.browser?.innerHeight + 
+              ', outer=' + data.browser?.outerWidth + 'x' + data.browser?.outerHeight);
+          log('Expected: ' + data.expected?.width + 'x' + data.expected?.height);
+          log('Actual Playwright viewport: ' + data.actual?.playwrightViewport?.width + 'x' + data.actual?.playwrightViewport?.height);
+          log('Actual browser inner: ' + data.actual?.browserInner?.width + 'x' + data.actual?.browserInner?.height);
+          
+          // Also check what we're actually capturing
+          const vpResponse = await fetch(pathWithMachine('/webrtc/viewport'), { headers: headersWithMachine() });
+          const vpData = await vpResponse.json();
+          log('Viewport endpoint reports: ' + vpData.width + 'x' + vpData.height);
+          
+          // Show any discrepancy
+          const actualHeight = data.actual?.playwrightViewport?.height || data.actual?.browserInner?.height;
+          const actualWidth = data.actual?.playwrightViewport?.width || data.actual?.browserInner?.width;
+          
+          if (actualHeight !== data.expected?.height) {
+            log('HEIGHT MISMATCH! Expected ' + data.expected?.height + ' but got ' + actualHeight);
+            log('This explains any white space or cutoff!');
+          }
+          
+          if (actualWidth !== data.expected?.width) {
+            log('WIDTH MISMATCH! Expected ' + data.expected?.width + ' but got ' + actualWidth);
+          }
+        } catch (e) {
+          log('Failed to get dimensions: ' + e.message);
+        }
+      };
+
+      function mapPointToServer(e){
+        const rect = videoEl.getBoundingClientRect();
+        
+        // CRITICAL: Use the actual video stream dimensions for mapping
+        // These represent the exact size of what we're seeing
+        const videoW = videoEl.videoWidth;
+        const videoH = videoEl.videoHeight;
+        
+        // The stream dimensions are what we map to - use actual dimensions, no defaults
+        const vw = videoW || window.streamDimensions?.w || window.serverViewport?.w;
+        const vh = videoH || window.streamDimensions?.h || window.serverViewport?.h;
+        
+        // If we don't have dimensions yet, can't map
+        if (!vw || !vh) {
+          console.log('No dimensions available for mapping');
+          return { vx: 0, vy: 0 };
+        }
+        
+        // Get the actual displayed size (CSS size)
+        const displayW = rect.width;
+        const displayH = rect.height;
+        
+        // Calculate exact position within the video element
+        const localX = e.clientX - rect.left;
+        const localY = e.clientY - rect.top;
+        
+        // Direct proportional mapping - no rounding until final step
+        // This ensures pixel-perfect accuracy
+        const vx = Math.floor((localX / displayW) * vw);
+        const vy = Math.floor((localY / displayH) * vh);
+        
+        // Clamp to valid range
+        const finalVx = Math.max(0, Math.min(vw - 1, vx));
+        const finalVy = Math.max(0, Math.min(vh - 1, vy));
+        
+        // Debug log to help diagnose issues
+        if (window.debugMapping) {
+          console.log('Mapping debug:', {
+            client: { x: e.clientX, y: e.clientY },
+            rect: { left: rect.left, top: rect.top, width: displayW, height: displayH },
+            local: { x: localX, y: localY },
+            video: { width: videoW, height: videoH },
+            server: { width: vw, height: vh },
+            mapped: { x: finalVx, y: finalVy }
+          });
+        }
+        
+        return { vx: finalVx, vy: finalVy };
+      }
+      // Enable debug mode via console: window.debugMapping = true
+      window.toggleDebug = () => { window.debugMapping = !window.debugMapping; log('Debug mapping: ' + (window.debugMapping ? 'ON' : 'OFF')); return window.debugMapping; };
+      
+      // Draw grid overlay for visual alignment verification
+      window.showGrid = () => {
+        // Remove existing grid if any
+        const existing = document.getElementById('debugGrid');
+        if (existing) {
+          existing.remove();
+          log('Grid removed');
+          return 'Grid removed';
+        }
+        
+        const rect = videoEl.getBoundingClientRect();
+        const grid = document.createElement('div');
+        grid.id = 'debugGrid';
+        grid.style.position = 'absolute';
+        grid.style.left = rect.left + 'px';
+        grid.style.top = rect.top + 'px';
+        grid.style.width = rect.width + 'px';
+        grid.style.height = rect.height + 'px';
+        grid.style.pointerEvents = 'none';
+        grid.style.zIndex = '9999';
+        
+        // Create 100px grid
+        const canvas = document.createElement('canvas');
+        canvas.width = rect.width;
+        canvas.height = rect.height;
+        canvas.style.width = '100%';
+        canvas.style.height = '100%';
+        const ctx = canvas.getContext('2d');
+        
+        // Draw grid lines
+        ctx.strokeStyle = 'rgba(0, 255, 0, 0.3)';
+        ctx.lineWidth = 1;
+        
+        // Vertical lines every 100px
+        for (let x = 0; x <= rect.width; x += 100) {
+          ctx.beginPath();
+          ctx.moveTo(x, 0);
+          ctx.lineTo(x, rect.height);
+          ctx.stroke();
+        }
+        
+        // Horizontal lines every 100px
+        for (let y = 0; y <= rect.height; y += 100) {
+          ctx.beginPath();
+          ctx.moveTo(0, y);
+          ctx.lineTo(rect.width, y);
+          ctx.stroke();
+        }
+        
+        // Draw coordinate labels
+        ctx.fillStyle = 'rgba(0, 255, 0, 0.8)';
+        ctx.font = '12px monospace';
+        for (let x = 0; x <= rect.width; x += 100) {
+          for (let y = 0; y <= rect.height; y += 100) {
+            ctx.fillText(`${x},${y}`, x + 2, y + 12);
+          }
+        }
+        
+        // Mark corners
+        ctx.fillStyle = 'red';
+        ctx.fillRect(0, 0, 5, 5);
+        ctx.fillRect(rect.width - 5, 0, 5, 5);
+        ctx.fillRect(0, rect.height - 5, 5, 5);
+        ctx.fillRect(rect.width - 5, rect.height - 5, 5, 5);
+        
+        grid.appendChild(canvas);
+        document.body.appendChild(grid);
+        
+        log('Grid overlay shown (100px spacing). Call showGrid() again to remove.');
+        return 'Grid shown';
+      };
+      
+      // Test coordinate mapping and create visual grid
+      window.testMapping = () => {
+        const rect = videoEl.getBoundingClientRect();
+        const tests = [
+          { name: 'Top-left', x: rect.left, y: rect.top },
+          { name: 'Top-right', x: rect.right - 1, y: rect.top },
+          { name: 'Bottom-left', x: rect.left, y: rect.bottom - 1 },
+          { name: 'Bottom-right', x: rect.right - 1, y: rect.bottom - 1 },
+          { name: 'Center', x: rect.left + rect.width/2, y: rect.top + rect.height/2 }
+        ];
+        
+        console.log('=== COORDINATE TEST ===');
+        console.log('Video element position:', rect.left, rect.top);
+        console.log('Video element size:', rect.width, 'x', rect.height);
+        console.log('Video intrinsic:', videoEl.videoWidth, 'x', videoEl.videoHeight);
+        console.log('Server viewport:', window.serverViewport);
+        console.log('Expected mappings:');
+        tests.forEach(t => {
+          const e = { clientX: t.x, clientY: t.y };
+          const { vx, vy } = mapPointToServer(e);
+          console.log(`${t.name}: client(${Math.round(t.x)}, ${Math.round(t.y)}) -> server(${vx}, ${vy})`);
+        });
+        
+        // Send test clicks to corners to verify
+        if (interacting) {
+          console.log('Sending test click to server at (0,0)...');
+          sendControl('CLICK_VIEWPORT', { vx: 0, vy: 0 });
+          setTimeout(() => {
+            console.log('Sending test click to server at (1279,719)...');
+            sendControl('CLICK_VIEWPORT', { vx: 1279, vy: 719 });
+          }, 1000);
+        }
+        
+        return 'Test complete - check console and video for markers';
+      };
+      
+      // Visual debug marker for clicks
+      function showClickMarker(clientX, clientY, serverX, serverY) {
+        if (!window.debugMarkers) return;
+        try {
+          const marker = document.createElement('div');
+          marker.style.position = 'absolute';
+          marker.style.left = (clientX - 5) + 'px';
+          marker.style.top = (clientY - 5) + 'px';
+          marker.style.width = '10px';
+          marker.style.height = '10px';
+          marker.style.borderRadius = '50%';
+          marker.style.backgroundColor = 'red';
+          marker.style.border = '2px solid white';
+          marker.style.pointerEvents = 'none';
+          marker.style.zIndex = '10000';
+          marker.title = `Client: ${clientX},${clientY} → Server: ${serverX},${serverY}`;
+          document.body.appendChild(marker);
+          setTimeout(() => marker.remove(), 3000);
+        } catch {}
+      }
+      
+      // Map video clicks to viewport coordinates
+      videoEl.addEventListener('click', (e)=>{
+        if (!interacting) return;
+        try {
+          const { vx, vy } = mapPointToServer(e);
+          const rect = videoEl.getBoundingClientRect();
+          log('click mapped: client(' + e.clientX + ',' + e.clientY + ') -> server(' + vx + ',' + vy + ') | video rect: ' + Math.round(rect.width) + 'x' + Math.round(rect.height) + ' at (' + Math.round(rect.left) + ',' + Math.round(rect.top) + ') | intrinsic: ' + videoEl.videoWidth + 'x' + videoEl.videoHeight);
+          showClickMarker(e.clientX, e.clientY, vx, vy);
+          sendControl('CLICK_VIEWPORT', { vx, vy });
+        } catch {}
+      });
+      // Send hover moves frequently to mimic local hover
+      let lastMoveTs = 0;
+      videoEl.addEventListener('mousemove', (e)=>{
+        if (!interacting) return;
+        const now = performance.now(); if (now - lastMoveTs < 16) return; lastMoveTs = now;
+        try { const { vx, vy } = mapPointToServer(e); sendControl('MOUSEMOVE', { vx, vy }); } catch {}
+      });
+      // Bring server window to front on enter for focus-sensitive sites
+      videoEl.addEventListener('mouseenter', ()=>{ try { sendControl('FOCUS'); } catch {} });
+      videoEl.addEventListener('dblclick', (e)=>{
+        if (!interacting) return; e.preventDefault();
+        try { const { vx, vy } = mapPointToServer(e); sendControl('DOUBLE_CLICK', { vx, vy }); } catch {}
+      });
+      // Drag selection support
+      let dragging = false;
+      videoEl.addEventListener('mousedown', (e)=>{
+        if (!interacting) return; e.preventDefault();
+        const { vx, vy } = mapPointToServer(e);
+        dragging = true; sendControl('MOUSEDOWN', { vx, vy, button: e.button===2?'right':(e.button===1?'middle':'left') });
+      });
+      window.addEventListener('mousemove', (e)=>{
+        if (!dragging || !interacting) return;
+        const { vx, vy } = mapPointToServer(e); sendControl('MOUSEMOVE', { vx, vy });
+      });
+      window.addEventListener('mouseup', (e)=>{
+        if (!dragging) return; dragging = false;
+        const { vx, vy } = mapPointToServer(e); sendControl('MOUSEUP', { vx, vy, button: e.button===2?'right':(e.button===1?'middle':'left') });
+      });
+      // Right-click handling - allow native context menu when Shift is held
+      videoEl.addEventListener('contextmenu', (e)=>{
+        if(!interacting) return; 
+        // Allow browser context menu if Shift is held
+        if(e.shiftKey) {
+          console.log('Shift+right-click: showing browser context menu');
+          return; // Don't prevent default
+        }
+        e.preventDefault(); 
+        const { vx, vy } = mapPointToServer(e); 
+        sendControl('RIGHT_CLICK',{vx,vy}); 
+      });
+      // Wheel to scroll
+      videoEl.addEventListener('wheel', (e)=>{ if(!interacting) return; e.preventDefault(); const dir = (e.deltaY>0)?'down':'up'; sendControl('SCROLL_DIR', { direction: dir }); }, { passive:false });
+      // Basic key handling when interacting
+      window.addEventListener('keydown',(e)=>{
+        // Special debug shortcuts work even when not interacting
+        if(e.key === 'F12' || (e.ctrlKey && e.shiftKey && e.key === 'I')) {
+          // Don't prevent default - let browser console open
+          console.log('Console shortcut detected');
+          return;
+        }
+        
+        // Debug shortcuts: Alt+D for debug mode, Alt+T for test mapping, Alt+M for markers
+        if(e.altKey && e.key === 'd') {
+          e.preventDefault();
+          const enabled = window.toggleDebug();
+          console.log('Debug mode:', enabled ? 'ON' : 'OFF');
+          return;
+        }
+        if(e.altKey && e.key === 't') {
+          e.preventDefault();
+          window.testMapping();
+          return;
+        }
+        if(e.altKey && e.key === 'm') {
+          e.preventDefault();
+          window.debugMarkers = !window.debugMarkers;
+          console.log('Debug markers:', window.debugMarkers ? 'ON' : 'OFF');
+          log('Debug markers: ' + (window.debugMarkers ? 'ON' : 'OFF'));
+          return;
+        }
+        if(e.altKey && e.key === 'g') {
+          e.preventDefault();
+          const result = window.showGrid();
+          log('Client grid: ' + result);
+          return;
+        }
+        if(e.altKey && e.key === 's') {
+          e.preventDefault();
+          document.getElementById('btnServerGrid').click();
+          return;
+        }
+        
+        if(!interacting) return;
+        if(e.key==='Enter'){ e.preventDefault(); sendControl('PRESS_ENTER'); return; }
+        // Printable characters → live TYPE_TEXT
+        if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+          const k = e.key;
+          if (k && (k.length === 1 || k === ' ')) { e.preventDefault(); const ch = (k === ' ' ? ' ' : k); sendControl('TYPE_TEXT', { text: ch, delay: 0 }); return; }
+        }
+        const controlKeys = ['Backspace','Tab','Escape','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Delete'];
+        if (controlKeys.includes(e.key)) { e.preventDefault(); sendControl('PRESS_KEY', { key: e.key }); return; }
+        // Ctrl/Cmd combos: map to PRESS_KEY_MOD (e.g., Ctrl+A)
+        if (e.ctrlKey || e.metaKey) { e.preventDefault(); sendControl('PRESS_KEY_MOD', { key: e.key.toUpperCase(), ctrl: e.ctrlKey||e.metaKey, meta: false, alt: e.altKey, shift: e.shiftKey }); return; }
+      });
+    </script>
+  </body>
+  </html>

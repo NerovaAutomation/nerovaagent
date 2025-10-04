@@ -1,0 +1,27 @@
+[
+  {
+    "guide_id": "open_specific_workflow",
+    "domain": "dashboard.nerovaautomation.com",
+    "intent_patterns": [
+      "click LP Lead In (Form)",
+      "open LP Lead In (Form)",
+      "select LP Lead In (Form) workflow",
+      "open workflow LP Lead In (Form)"
+    ],
+    "steps": [
+      {
+        "step": 1,
+        "type": "navigate",
+        "url": "https://dashboard.nerovaautomation.com/v2/location/GsbA11qhYYQRZY2OSQp7/automation/workflows?listTab=all"
+      },
+      {
+        "step": 0,
+        "id": "14fh7lc",
+        "name": "LP Lead In (Form)",
+        "action": "click",
+        "role": "generic",
+        "selector": "div:nth-of-type(1)>span:nth-of-type(1)>p:nth-of-type(1)"
+      }
+    ]
+  }
+]

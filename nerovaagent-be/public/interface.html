@@ -1,0 +1,1556 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>NL2Web Assistant</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif; background:#0f1222; color:#eaeef9; margin:0; }
+    .wrap { max-width: 920px; margin: 0 auto; padding: 16px; }
+    h1 { margin: 0 0 12px; font-size: 18px; }
+    .row { display:flex; gap:8px; align-items:center; margin:6px 0; }
+    input, button, textarea { padding:8px; border-radius:6px; border:1px solid #334; background:#161b38; color:#dbe3ff; }
+    textarea { width: 100%; min-height: 120px; }
+    button { background:#2a3cff; border-color:#2a3cff; cursor:pointer; }
+    button:hover { filter:brightness(1.1); }
+    pre { background:#0b0e1a; border:1px solid #334; border-radius:6px; padding:8px; max-height:360px; overflow:auto; }
+    .cols { display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
+    label { font-size:12px; opacity:.85; }
+    /* Fixed-size, scrollable critic boxes for easier debugging */
+    #criticInput, #criticOutput {
+      height: 260px;
+      max-height: 260px;
+      width: 100%;
+      max-width: 100%;
+      overflow: auto;
+      white-space: pre-wrap;       /* wrap long lines so text flows down */
+      word-break: break-word;      /* break long tokens */
+      overflow-wrap: anywhere;     /* ensure wrapping under any condition */
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Natural language → Web action (viewport)</h1>
+    <h3>Planner (GPT-5) — generate step-by-step JSON</h3>
+    <div class="row">
+      <input id="plannerKey" type="password" placeholder="OpenAI API key (Planner)" style="width:280px" />
+      <input id="plannerModel" type="text" placeholder="Model (e.g., gpt-5)" style="width:180px" />
+      <button id="btnPlannerSave">Save</button>
+      <span id="plannerSaveMsg"></span>
+    </div>
+    <h3>Retriever (gpt‑5‑nano) — test semantic match</h3>
+    <div class="row">
+      <input id="retrieverKey" type="password" placeholder="OpenAI API key (Nano)" style="width:280px" />
+      <input id="retrieverModel" type="text" placeholder="Model (e.g., gpt-5-nano)" style="width:180px" />
+      <button id="btnRetrieverSave">Save</button>
+      <span id="retrieverSaveMsg"></span>
+    </div>
+    <textarea id="retrieverPrompt" placeholder="Enter a natural language goal to retrieve a guide"></textarea>
+    <div class="row">
+      <button id="btnRetrieve">Retrieve guide</button>
+    </div>
+    <div class="cols">
+      <div>
+        <h3>Retriever: Sent payload (system+user)</h3>
+        <pre id="retrieverCands"></pre>
+      </div>
+      <div>
+        <h3>Retriever: Nano output</h3>
+        <pre id="retrieverOut"></pre>
+      </div>
+    </div>
+    <textarea id="plannerPrompt" placeholder="Describe the goal (with your rules). The assistant should output strict JSON plan."></textarea>
+    <div class="row">
+      <button id="btnGeneratePlan">Generate plan</button>
+      <button id="btnRunPlan">Run plan (auto)</button>
+      <button id="btnRunRecipe">Run by recipe (auto)</button>
+      <button id="btnRunNoPlanner">Run (no planner)</button>
+      
+      <button id="btnScanIframes">Scan iframes (hittables)</button>
+      <span id="saveBar" style="margin-left:auto; display:none; gap:8px; align-items:center;">
+        <span>Save as recipe?</span>
+        <button id="btnSaveYes">Yes</button>
+        <button id="btnSaveNo">No</button>
+        <span id="saveMsg2" class="hint"></span>
+      </span>
+    </div>
+    <div class="cols">
+      <div>
+        <h3>Planner: Sent prompt (with rules)</h3>
+        <pre id="plannerSent"></pre>
+      </div>
+      <div>
+        <h3>Planner: Assistant output</h3>
+        <pre id="plannerOut"></pre>
+      </div>
+    </div>
+    <div class="row">
+      <input id="openaiKey" type="password" placeholder="OpenAI API key" style="width:280px" />
+      <input id="assistantId" type="text" placeholder="Assistant ID" style="width:280px" />
+      <button id="btnSave">Save</button>
+      <span id="saveMsg"></span>
+    </div>
+    <div class="row">
+      <button id="btnOpenBrowser">Open browser</button>
+      <button id="btnOpenDashboard">Open Nerova Dashboard</button>
+    </div>
+    <label>Step 1: User prompt</label>
+    <textarea id="prompt" placeholder="e.g., Edit the emails in the workflows automation tab"></textarea>
+    <div class="row">
+      <button id="btnCollect">Collect candidates (viewport)</button>
+      <button id="btnSend">Send to Assistant</button>
+    </div>
+
+    <!-- Step Critic (API + I/O), placed above Step 2 -->
+    <h3>Step Critic</h3>
+    <div class="row">
+      <input id="criticKey" type="password" placeholder="OpenAI API key (Critic)" style="width:280px" />
+      <input id="criticModel" type="text" placeholder="Model (e.g., gpt-5-nano)" style="width:180px" />
+      <button id="btnCriticSave">Save</button>
+      <span id="criticSaveMsg"></span>
+    </div>
+    <div class="cols">
+      <div>
+        <h4>Critic Input</h4>
+        <pre id="criticInput"></pre>
+      </div>
+      <div>
+        <h4>Critic Output</h4>
+        <pre id="criticOutput"></pre>
+      </div>
+    </div>
+    <div class="row">
+      <input id="openaiKey2" type="password" placeholder="OpenAI API key (Assistant 2)" style="width:280px" />
+      <input id="assistantId2" type="text" placeholder="Assistant ID (Action)" style="width:280px" />
+      <button id="btnSave2">Save</button>
+      <button id="btnSendStep3">Send Step 3 + screenshot to Assistant 2</button>
+    </div>
+    <div class="cols">
+      <div>
+        <h3>Candidates (Step 2 input)</h3>
+        <pre id="candidates"></pre>
+      </div>
+      <div>
+        <h3>Assistant result (Step 2b output)</h3>
+        <pre id="assistantOut"></pre>
+      </div>
+    </div>
+  <h3>Step 3 Output (full hittables for selected ids)</h3>
+  <pre id="step3"></pre>
+  <div class="row">
+    <button id="btnGetStep3">Fetch Step 3 from ids</button>
+  </div>
+  <h3>Step 4 Output (Assistant 2 decision)</h3>
+  <pre id="step4"></pre>
+  <h3>Step 4 Text</h3>
+  <pre id="step4Text"></pre>
+
+  <!-- Verification box at the bottom -->
+  <h3>Verification</h3>
+  <pre id="verification"></pre>
+
+  <!-- Scroll summary log -->
+  <h3>Scroll</h3>
+  <pre id="scrollDebug"></pre>
+
+  <!-- Scroll trace (debug) -->
+  <h3>Scroll debug</h3>
+  <pre id="scrollTrace"></pre>
+
+  </div>
+  <script>
+    // Persist keys
+    const keyEl = document.getElementById('openaiKey');
+    const asstEl = document.getElementById('assistantId');
+    keyEl.value = localStorage.getItem('openaiApiKey') || '';
+    asstEl.value = localStorage.getItem('assistantId') || '';
+    document.getElementById('btnSave').onclick = () => {
+      localStorage.setItem('openaiApiKey', keyEl.value || '');
+      localStorage.setItem('assistantId', asstEl.value || '');
+      document.getElementById('saveMsg').textContent = 'Saved';
+      setTimeout(()=> document.getElementById('saveMsg').textContent = '', 1000);
+    };
+
+    // Critic API creds persist
+    const criticKeyEl = document.getElementById('criticKey');
+    const criticModelEl = document.getElementById('criticModel');
+    criticKeyEl.value = localStorage.getItem('criticOpenaiKey') || '';
+    criticModelEl.value = localStorage.getItem('criticModel') || 'gpt-5-nano';
+    document.getElementById('btnCriticSave').onclick = () => {
+      localStorage.setItem('criticOpenaiKey', criticKeyEl.value || '');
+      localStorage.setItem('criticModel', criticModelEl.value || 'gpt-5-nano');
+      const m = document.getElementById('criticSaveMsg'); m.textContent = 'Saved'; setTimeout(()=> m.textContent='', 1000);
+    };
+
+    const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host);
+    function sendWS(obj) {
+      try { ws.send(JSON.stringify(obj)); } catch (e) { try { console.warn('WS send failed', e); } catch {} }
+    }
+    function waitForWs(matchFn, timeoutMs = 4000) {
+      return new Promise((resolve, reject) => {
+        let done = false;
+        const onMsg = (ev) => {
+          try { const m = JSON.parse(ev.data); if (matchFn(m)) { cleanup(); resolve(m); } } catch {}
+        };
+        const cleanup = () => { if (done) return; done = true; ws.removeEventListener('message', onMsg); clearTimeout(tid); };
+        ws.addEventListener('message', onMsg);
+        const tid = setTimeout(() => { cleanup(); reject(new Error('waitForWs timeout')); }, timeoutMs);
+      });
+    }
+
+    const promptEl = document.getElementById('prompt');
+    // Scroll debug helpers
+    const scrollDbgEl = document.getElementById('scrollDebug');
+    const scrollTraceEl = document.getElementById('scrollTrace');
+    const scrollSummaries = [];
+    const scrollTraces = [];
+    // Suppress non-summary events in the panel
+    ws.addEventListener('open', () => {});
+    ws.addEventListener('close', () => {});
+    ws.addEventListener('error', () => {});
+    ws.addEventListener('message', (ev) => {
+      try {
+        const m = JSON.parse(ev.data);
+        // Capture server-side debug for SCROLL_SIMPLE
+        if (m && m.type === 'SCROLL_SIMPLE_DEBUG') {
+          try {
+            scrollTraces.push(m);
+            while (scrollTraces.length > 100) scrollTraces.shift();
+            scrollTraceEl.textContent = JSON.stringify(scrollTraces, null, 2);
+          } catch {}
+        }
+        // Suppress other intermediate debug; only show final summary JSON
+        if (m && m.type === 'SCROLLED') {
+          const verifiedOk = !!(m && m.verified && m.verified.ok);
+          const summary = {
+            direction: m.direction || null,
+            scroll: verifiedOk ? 'success' : 'fail'
+          };
+          try {
+            scrollSummaries.push(summary);
+            while (scrollSummaries.length > 50) scrollSummaries.shift();
+            scrollDbgEl.textContent = JSON.stringify(scrollSummaries, null, 2);
+          } catch {}
+        }
+      } catch {}
+    });
+    const candidatesEl = document.getElementById('candidates');
+    const assistantOutEl = document.getElementById('assistantOut');
+    const step3El = document.getElementById('step3');
+    const step4El = document.getElementById('step4');
+    
+
+    // Planner persist
+    const plannerKeyEl = document.getElementById('plannerKey');
+    const plannerModelEl = document.getElementById('plannerModel');
+    plannerKeyEl.value = localStorage.getItem('plannerOpenaiKey') || '';
+    plannerModelEl.value = localStorage.getItem('plannerModel') || 'gpt-5';
+    document.getElementById('btnPlannerSave').onclick = () => {
+      localStorage.setItem('plannerOpenaiKey', plannerKeyEl.value || '');
+      localStorage.setItem('plannerModel', plannerModelEl.value || 'gpt-5');
+      const m = document.getElementById('plannerSaveMsg'); m.textContent = 'Saved'; setTimeout(()=> m.textContent='', 1000);
+    };
+
+    const plannerPromptEl = document.getElementById('plannerPrompt');
+    const plannerSentEl = document.getElementById('plannerSent');
+    const plannerOutEl = document.getElementById('plannerOut');
+    let lastPlan = null;
+    let stepMode = false;
+    let currentStepTarget = null; // { id, type, hints, text? } when running a planned step
+    let runningPlan = false;
+    let noPlannerMode = false;
+    let planActionSteps = [];
+    let currentStepIdx = -1;
+    // Track previous action for critic context
+    let lastAction = null;
+    let tempGuidePath = '';
+    let recipeMode = false;
+    let advanceRecipe = null;
+    let recipeRetryCount = 0;
+
+    // Retriever persist
+    const retrKeyEl = document.getElementById('retrieverKey');
+    const retrModelEl = document.getElementById('retrieverModel');
+    retrKeyEl.value = localStorage.getItem('retrieverOpenaiKey') || '';
+    retrModelEl.value = localStorage.getItem('retrieverModel') || 'gpt-5-nano';
+    document.getElementById('btnRetrieverSave').onclick = () => {
+      localStorage.setItem('retrieverOpenaiKey', retrKeyEl.value || '');
+      localStorage.setItem('retrieverModel', retrModelEl.value || 'gpt-5-nano');
+      const m = document.getElementById('retrieverSaveMsg'); m.textContent = 'Saved'; setTimeout(()=> m.textContent='', 1000);
+    };
+    const retrPromptEl = document.getElementById('retrieverPrompt');
+    const retrCandsEl = document.getElementById('retrieverCands');
+    const retrOutEl = document.getElementById('retrieverOut');
+    document.getElementById('btnRetrieve').onclick = async () => {
+      try {
+        retrCandsEl.textContent = '...'; retrOutEl.textContent = '';
+        const openaiApiKey = localStorage.getItem('retrieverOpenaiKey') || '';
+        const model = localStorage.getItem('retrieverModel') || 'gpt-5-nano';
+        const prompt = (retrPromptEl.value || plannerPromptEl.value || '').trim();
+        if (!prompt) { retrOutEl.textContent = 'Enter a prompt'; return; }
+        const res = await fetch('/recipes/retrieve', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt, topN: 20, openaiApiKey, model }) });
+        const json = await res.json();
+        retrCandsEl.textContent = JSON.stringify(json.sent || {}, null, 2);
+        retrOutEl.textContent = JSON.stringify(json.rerank || json, null, 2);
+      } catch (e) {
+        retrOutEl.textContent = String(e.message || e);
+      }
+    };
+
+    // Test-only: scan hittables inside all iframes and show output
+    document.getElementById('btnScanIframes').onclick = async () => {
+      try {
+        ws.send(JSON.stringify({ type: 'SCAN_IFRAMES_HITTABLES', options: { minSize: 8, max: 1000 } }));
+      } catch {}
+    };
+
+    // Run by recipe: prefilter → nano → if continue=true run recipe-by-ids; else planner flow
+    document.getElementById('btnRunRecipe').onclick = async () => {
+      if (runningPlan) { alert('A plan is already running. Please wait for it to finish.'); return; }
+      try {
+        const openaiApiKey = localStorage.getItem('retrieverOpenaiKey') || '';
+        const model = localStorage.getItem('retrieverModel') || 'gpt-5-nano';
+        const prompt = (retrPromptEl.value || plannerPromptEl.value || '').trim();
+        if (!prompt) { alert('Enter a prompt'); return; }
+        const r = await fetch('/recipes/retrieve', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ prompt, topN: 20, openaiApiKey, model }) });
+        const j = await r.json();
+        retrCandsEl.textContent = JSON.stringify(j.sent || {}, null, 2);
+        retrOutEl.textContent = JSON.stringify(j.rerank || j, null, 2);
+        const use = !!j && j.continue === true && j.rerank && j.rerank.guide_id;
+        if (!use) { document.getElementById('btnRunPlan').click(); return; }
+        // Fetch recipe
+        const rr = await fetch(`/recipes/get?guide_id=${encodeURIComponent(j.rerank.guide_id)}`);
+        const rj = await rr.json();
+        if (!rj.ok) { document.getElementById('btnRunPlan').click(); return; }
+        const recipe = rj.recipe;
+        // Execute recipe steps by id with domain guard
+        sendWS({ type: 'FOCUS' });
+        // Navigate first
+        const navStep = (recipe.steps||[]).find(s=>s && s.step===1 && s.type==='navigate' && s.url);
+        if (navStep) {
+          sendWS({ type: 'NAVIGATE', url: navStep.url });
+          try { await waitForWs(m => m && m.type==='NAVIGATED', 8000); } catch { await new Promise(r=>setTimeout(r,1500)); }
+          sendWS({ type: 'FOCUS' });
+        }
+        // Domain guard: ensure correct hostname before starting
+        const targetHost = (()=>{ try{ const u=new URL(navStep?.url||''); return u.hostname||''; }catch{return '';} })();
+        if (targetHost) {
+          let guardTries = 0;
+          while (guardTries < 10) {
+            await new Promise(r=>setTimeout(r, 2000));
+            ws.send(JSON.stringify({ type: 'GET_URL' }));
+            const cur = await new Promise(resolve => {
+              const handler = (ev) => { try { const m = JSON.parse(ev.data); if (m && m.type==='URL') { ws.removeEventListener('message', handler); resolve(m); } } catch {} };
+              ws.addEventListener('message', handler);
+            });
+            try {
+              const curHost = new URL(cur.url||'').hostname || '';
+              if (curHost === targetHost) break;
+              // redirect to correct domain
+              sendWS({ type: 'NAVIGATE', url: navStep.url });
+            } catch {}
+            guardTries += 1;
+          }
+        }
+        // Build full actionable steps (exclude navigate) and run sequentially in recipe mode
+        planActionSteps = (recipe.steps||[]).filter(s=>s && s.step!==1);
+        recipeMode = true; runningPlan = false; stepMode = false; currentStepIdx = -1; recipeRetryCount = 0;
+        const runNextRecipe = async () => {
+          currentStepIdx += 1;
+          if (currentStepIdx >= planActionSteps.length) { recipeMode = false; advanceRecipe = null; const sb=document.getElementById('saveBar'); if (sb) sb.style.display='flex'; return; }
+          const step = planActionSteps[currentStepIdx];
+          if (step && step.id) {
+            recipeRetryCount = 0;
+            lastAssistantIds = [step.id];
+            // Wait for load before first fetch in recipe mode
+            ws.send(JSON.stringify({ type: 'WAIT_FOR_LOAD' }));
+            try {
+              await new Promise((resolve) => {
+                const h = (ev) => { try { const m = JSON.parse(ev.data); if (m && m.type === 'LOADED') { ws.removeEventListener('message', h); resolve(true); } } catch {} };
+                ws.addEventListener('message', h);
+                setTimeout(() => { ws.removeEventListener('message', h); resolve(false); }, 3000);
+              });
+            } catch {}
+            sendWS({ type: 'GET_HITTABLES_BY_IDS', ids: lastAssistantIds });
+          }
+        };
+        advanceRecipe = runNextRecipe;
+        runNextRecipe();
+      } catch (e) { alert('Run by recipe error: ' + (e.message||e)); }
+    };
+
+    async function runStepAt(index) {
+      if (!Array.isArray(planActionSteps) || index < 0 || index >= planActionSteps.length) return;
+      currentStepIdx = index;
+      const step = planActionSteps[index];
+      stepMode = true;
+      const basePrompt = (plannerPromptEl.value || promptEl.value || '');
+      // --- Step Critic: gate in normal workflow before every non-navigate step ---
+      if ((runningPlan || noPlannerMode) && !recipeMode) {
+        try {
+          const criticSys = noPlannerMode ? `SYSTEM (Screen-first Web Action Critic)
+
+You are a natural-language-to-web action critic. The goal is stated by the user prompt. Make the best single decision NOW, based ONLY on what is visible in the current screenshot, to advance toward the final goal.
+
+Strict rules:
+- Output ONLY a single valid JSON object (no prose, no markdown, no code fences).
+- Allowed actions: accept | click_by_text_role | scroll | back | navigate | stop (choose ONE).
+- Prefer deterministic visible signals: text + role.
+- Never return "accept" unless the chosen control is visibly present.
+- For action="scroll" include: scroll { direction: "down" | "up", pages?: 1..3 }.
+- Include a non-empty reason and a numeric confidence 0..1.
+\n+Output format for click actions:
+- Do NOT return type_in_text_role. If typing is needed after focusing an input, return action="click_by_text_role" with a Step-2 style target and include "content" to type.
+
+Objective:
+- Make the best single decision in the current situation to advance toward the final goal from the user prompt.
+
+Screen-first precedence:
+- Always prioritize what is visible on the current screen. The written plan is not available; act by visible headings/labels/CTAs.
+
+Visual-first decision policy:
+- Decide only from the screenshot (no hidden assumptions).
+- If a visible control more directly advances the end goal, return click_by_text_role and include a full Step-2 replacement target with text_exact first (then fallbacks).
+- Prefer direct on-screen goal-aligned controls over indirect paths (e.g., if a "Chipotle" result/tile/link is visibly present, click it instead of typing into search). Only type/search when the needed entity/control is not visible.
+- If nothing clearly aligns, return scroll (direction/pages). Do not click unrelated CTAs.
+- When the page is a different variant than expected, pick the visible entry point whose text best matches the goal keywords.
+- Never choose controls whose text contradicts the goal keywords.
+
+Visibility constraint:
+- Only return click_by_text_role when the replacement target is visibly present. If near the edges (~60px top / ~100px bottom), scroll first to center it.
+
+Expected output examples:
+{
+  "action": "click_by_text_role",
+  "target": { "id": "Step 2", "type": "click_by_candidates", "hints": { "text_exact": ["Search"], "text": ["Search", "Find"], "roles": ["textbox", "searchbox"] } },
+  "reason": "Search box is visible; start searching.",
+  "confidence": 0.9
+}
+{
+  "action": "navigate",
+  "url": "https://example.com",
+  "reason": "Target site needs opening first.",
+  "confidence": 0.9
+}` : `SYSTEM (Step Critic)
+
+You are the Step Critic. Given the CURRENT PAGE (screenshot provided separately) and the PLANNED STEP, decide if the planned step is reasonable RIGHT NOW. If yes, accept. If not, return ONE corrective action.
+
+Strict rules:
+- Output ONLY a single valid JSON object (no prose, no markdown, no code fences).
+- Prefer deterministic targets from human-visible signals: text + role. (No DOM candidates are provided.)
+- Never return "accept" unless the planned target/intent is visibly present in the provided screenshot. If the target seems right but is offscreen, occluded, or uncertain, return a scroll with keep_target=true.
+- For action="scroll" you MUST include: scroll { direction: "down" | "up", pages?: 1..3 } (direction is required).
+- Every action MUST include a non-empty reason. For action="scroll", the reason should justify direction/pages.
+- If typing is needed after focusing an input, include a content string.
+- If the planned_step includes content and the target is plausibly an input (textbox/searchbox/combobox), prefer { "action":"accept" } (the runtime will click and type the content) rather than returning type_in_text_role.
+- For action=accept you MUST include: step { id, type, keep_target:true }, and a non-empty reason. (keep_target MUST be true for accept.)
+- Include a numeric confidence between 0 and 1.
+- Return exactly ONE action; do not return arrays of actions.
+
+Visibility constraint:
+- Only return "click_by_text_role" when the replacement target is visibly present in the current screenshot. If not visible, return action="scroll" (include direction/pages) and re-evaluate after scrolling; do not output off-screen targets.
+
+- If the intended target is near the viewport edges (e.g., within ~60px of the top or ~100px of the bottom), return action="scroll" first to bring it into a comfortable center band before clicking.
+
+Objective:
+- Make the best single decision in the current situation to advance toward the final goal stated in the user prompt and plan intent.
+
+Screen-first precedence:
+- Always prioritize what is visible on the current screen over the written plan. Use planned_step and next_steps only as a light guide; do not attempt the planned control if it is not visible now.
+
+Visual-first decision policy:
+- Base decisions only on what is visible in the screenshot (headings, labels, placeholders, CTA text). Do not assume hidden flows.
+- If the planned control is not visible but another visible control more directly advances the end goal, return action="click_by_text_role" and include a full Step-2 replacement target with text_exact first (then fallbacks).
+- If no clearly goal-aligned control is visible, return action="scroll" (include direction/pages). Do not click unrelated CTAs.
+- When the page looks like a different variant than expected, pick the visible entry point whose text best matches the goal (from original prompt/plan intent) purely by its visible label.
+- Never choose controls whose text contradicts the goal keywords.
+
+Outcome-first rule:
+- If a DIFFERENT visible control more directly advances the user's end goal than the planned step, CHOOSE IT. Example: on a cart page, prefer "Proceed to checkout" (button/link) over warranty/upsell prompts like "Continue with protection" or "No thanks". Do NOT scroll to chase the planned item when a better alternative is already visible.
+
+Context awareness:
+- Unexpected events can happen. Be page-aware and reactive to the current screen. Using planned_step and next_steps, choose the visible control that most directly advances the end goal now. Avoid auth/account flows unless the planned action cannot proceed without them.
+
+Context and goal alignment:
+- Use goal.original_prompt and plan_intent to infer entity/type constraints (e.g., "backpack" vs "shoes"). Do NOT select controls unrelated to the goal's entity.
+- On category/search pages (grid/list of items), prefer clicking a matching item tile/link (by visible title/text keywords) before attempting add-to-cart. Only click add-to-cart when it is clearly associated with a matching item.
+- If no matching item is visible, scroll; if this page is off-path for the current intent, use back; do not accept unrelated CTAs that diverge from the goal.
+
+Allowed actions (CHOOSE ONLY ONE; any other value is invalid):
+- accept | click_by_text_role | type_in_text_role | scroll | back | navigate | stop
+Notes:
+- Do NOT output action names outside the allowed list (e.g., "click_by_candidates" is NOT allowed).
+- "accept" means CONTINUE with the planned step as-is (keep_target:true). Do NOT use "click_by_text_role" as a synonym for acceptance; if the planned step is correct now, use "accept".
+- Use "click_by_text_role" only when you must change the target to a different visible text/role on-screen. When you choose click_by_text_role, you MUST also include a replacement Step-2 style target object under "target" with this shape: { id, type: "click_by_candidates", hints: { text_exact?: string[], text?: string[], roles?: string[] } }. Prefer text_exact for the primary visible label; include text fallbacks and roles as needed.
+
+Expected output example:
+{
+  "action": "accept",
+  "step": { "id": "Step 2", "type": "click_by_candidates", "keep_target": true },
+  "reason": "Planned search input is correct and visible; proceed to focus and type content.",
+  "confidence": 0.9
+}`;
+          const planned = { id: step.id || `Step ${index+2}`, type: step.type || 'click_by_candidates', hints: step.hints || {}, content: (typeof step.content === 'string' ? step.content : '') };
+          const nextTwo = planActionSteps.slice(index+1, index+3).map(s => ({ id: s?.id, type: s?.type, hints: s?.hints || {}, content: (typeof s?.content==='string'?s.content:'') }));
+          const realUrl = await new Promise(resolve => {
+            let done = false;
+            const handler = (ev) => { try { const m = JSON.parse(ev.data); if (m && m.type === 'URL') { ws.removeEventListener('message', handler); if (!done) { done = true; resolve(m.url || ''); } } } catch {} };
+            ws.addEventListener('message', handler);
+            try { ws.send(JSON.stringify({ type: 'GET_URL' })); } catch {}
+            setTimeout(() => { if (!done) { ws.removeEventListener('message', handler); resolve(''); } }, 1200);
+          });
+          const plannedStepForCritic = (currentStepTarget && currentStepTarget.type === 'click_by_candidates')
+            ? { id: currentStepTarget.id || `Step ${index+2}`, type: 'click_by_candidates', hints: currentStepTarget.hints || {}, content: (typeof currentStepTarget.content === 'string' ? currentStepTarget.content : '') }
+            : planned;
+          const userPayload = { goal: { original_prompt: basePrompt, plan_intent: (noPlannerMode ? '' : (lastPlan?.intent || '')) }, run: { run_token: (lastPlan?.plan_id || '') + '-run', step_token: `step-${index+2}` }, context: { current_url: realUrl || '', at_top: false, at_bottom: false, recent_scrolls: { down: 0, up: 0 } }, plan_window: { previous_action: lastAction || null, planned_step: plannedStepForCritic, next_steps: nextTwo } };
+          const body = { openaiApiKey: localStorage.getItem('criticOpenaiKey') || '', model: localStorage.getItem('criticModel') || 'gpt-5-nano', system: criticSys, user: JSON.stringify(userPayload) };
+          try { document.getElementById('criticInput').textContent = JSON.stringify({ system: criticSys, user: body.user, screenshot: true }, null, 2); } catch {}
+          if (body.openaiApiKey) {
+            // Helper to run critic once (with fresh URL + screenshot on server)
+            const runCritic = async () => {
+              // refresh real URL for accuracy
+              const realUrl2 = await new Promise(resolve => {
+                let done2 = false;
+                const handler2 = (ev) => { try { const m2 = JSON.parse(ev.data); if (m2 && m2.type === 'URL') { ws.removeEventListener('message', handler2); if (!done2) { done2 = true; resolve(m2.url || ''); } } } catch {} };
+                ws.addEventListener('message', handler2);
+                try { ws.send(JSON.stringify({ type: 'GET_URL' })); } catch {}
+                setTimeout(() => { if (!done2) { ws.removeEventListener('message', handler2); resolve(''); } }, 1200);
+              });
+              const payload = { goal: { original_prompt: basePrompt, plan_intent: (noPlannerMode ? '' : (lastPlan?.intent || '')) }, run: { run_token: (lastPlan?.plan_id || '') + '-run', step_token: `step-${index+2}` }, context: { current_url: realUrl2 || '', at_top: false, at_bottom: false, recent_scrolls: { down: 0, up: 0 } }, plan_window: { previous_action: lastAction || null, planned_step: plannedStepForCritic, next_steps: nextTwo } };
+              const body2 = { ...body, user: JSON.stringify(payload) };
+              try { document.getElementById('criticInput').textContent = JSON.stringify({ system: criticSys, user: body2.user, screenshot: true }, null, 2); } catch {}
+              const rX = await fetch('/critic', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body2) });
+              const jX = await rX.json();
+              try { document.getElementById('criticOutput').textContent = JSON.stringify(jX.parsed || jX, null, 2); } catch {}
+              return jX.parsed || null;
+            };
+
+            // Ensure browser is focused before attempting to scroll and wait for ack
+            try {
+              ws.send(JSON.stringify({ type: 'FOCUS' }));
+              try { await waitForWs(m => m && m.type === 'FOCUSED', 1500); } catch {}
+            } catch {}
+            let decision = await runCritic();
+            let scrollTries = 0;
+            while (decision && decision.action === 'scroll' && scrollTries < 12) {
+              let dir = 'down';
+              try {
+                if (decision.scroll && (decision.scroll.direction === 'up' || decision.scroll.direction === 'down')) dir = decision.scroll.direction;
+              } catch {}
+              try {
+                // Ensure server targets the active tab
+                ws.send(JSON.stringify({ type: 'FOCUS' }));
+                try { await waitForWs(m => m && m.type === 'FOCUSED', 2000); } catch {}
+                // Send exactly ONE scroll per critic decision
+                const token = `st-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,6)}`;
+                ws.send(JSON.stringify({ type: 'SCROLL_UNIVERSAL', direction: dir, token }));
+                try {
+                  const ack = await waitForWs(m => m && m.type === 'SCROLLED' && (!m.token || m.token === token), 4000);
+                  // summary will be printed by SCROLLED handler
+                } catch {
+                  // ignore
+                }
+              } catch {}
+              // Small settle then re-run critic with fresh screenshot
+              await new Promise(r => setTimeout(r, 250));
+              decision = await runCritic();
+              // Do not adopt new targets mid-loop; wait until scroll loop finishes
+              // If critic returned malformed scroll (missing direction), pin to last dir and 1 page
+              if (decision && decision.action === 'scroll' && (!decision.scroll || !('direction' in decision.scroll))) {
+                decision = { ...decision, scroll: { direction: dir, pages: 1 } };
+              }
+              scrollTries += 1;
+            }
+
+            // In no-planner mode, allow navigate decisions and handle them here
+            if (noPlannerMode && decision && decision.action === 'navigate' && typeof decision.url === 'string' && decision.url.trim()) {
+              try {
+                const targetUrl = decision.url.trim();
+                ws.send(JSON.stringify({ type: 'FOCUS' }));
+                ws.send(JSON.stringify({ type: 'NAVIGATE', url: targetUrl }));
+                try { await waitForWs(m => m && m.type === 'NAVIGATED', 8000); } catch {}
+                ws.send(JSON.stringify({ type: 'FOCUS' }));
+              } catch {}
+              // Re-run critic after navigation and handle potential scrolls again
+              decision = await runCritic();
+              let navScrollTries = 0;
+              while (decision && decision.action === 'scroll' && navScrollTries < 12) {
+                let dir2 = 'down';
+                try { if (decision.scroll && (decision.scroll.direction === 'up' || decision.scroll.direction === 'down')) dir2 = decision.scroll.direction; } catch {}
+                try {
+                  ws.send(JSON.stringify({ type: 'FOCUS' }));
+                  try { await waitForWs(m => m && m.type === 'FOCUSED', 2000); } catch {}
+                  const token2 = `st-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,6)}`;
+                  ws.send(JSON.stringify({ type: 'SCROLL_UNIVERSAL', direction: dir2, token: token2 }));
+                  try { await waitForWs(m => m && m.type === 'SCROLLED' && (!m.token || m.token === token2), 4000); } catch {}
+                } catch {}
+                await new Promise(r => setTimeout(r, 250));
+                decision = await runCritic();
+                navScrollTries += 1;
+              }
+            }
+
+            // Only after scroll loop ends: adopt replacement target OR accept as-is
+            if (decision && decision.action === 'click_by_text_role' && decision.target && decision.target.type === 'click_by_candidates') {
+              // Replace Step 2 target strictly for this step and preserve content from critic output
+              try {
+                const dt = decision.target || {};
+                const c1 = (typeof dt.content === 'string' ? dt.content : '');
+                const c2 = (typeof dt.Content === 'string' ? dt.Content : '');
+                const c3 = (typeof decision.content === 'string' ? decision.content : '');
+                const c4 = (typeof decision.Content === 'string' ? decision.Content : '');
+                currentStepTarget = {
+                  id: dt.id || `Step ${index+2}`,
+                  type: 'click_by_candidates',
+                  hints: dt.hints || {},
+                  content: (c1 || c2 || c3 || c4),
+                  center: (Array.isArray(dt.center) && dt.center.length === 2 ? dt.center : null)
+                };
+              } catch {
+                currentStepTarget = decision.target;
+              }
+              // Update previous action memory for the critic
+              try { lastAction = { action: 'click_by_text_role', target: currentStepTarget }; } catch {}
+            } else if (decision && decision.action === 'accept') {
+              // Proceed with planned target; clear any stale critic target
+              try { currentStepTarget = null; } catch {}
+              try { lastAction = { action: 'accept', step: decision.step || null }; } catch {}
+            } else {
+              try { alert('Step Critic did not accept this action step (keep_target must be true). Aborting step.'); } catch {}
+              stepMode = false;
+              return;
+            }
+          }
+        } catch { /* If critic fails, proceed (or optionally abort) */ }
+      }
+      if (step.type === 'click_by_candidates') {
+        pendingSend = true;
+        // Strict Step 2 target selection: use critic-provided replacement if present; else use planned step
+        const useCriticTarget = !!(currentStepTarget && currentStepTarget.type === 'click_by_candidates' && (currentStepTarget.hints || currentStepTarget.id));
+        currentStepTarget = useCriticTarget ? currentStepTarget : { id: step.id, type: step.type, hints: step.hints };
+        candidatesEl.textContent = JSON.stringify({ target: currentStepTarget, k: 15, candidates: [] }, null, 2);
+        sendWS({ type: 'GRAB_CANDIDATE_STRINGS', options: { minSize: 8, max: 2000 } });
+      } else if (step.type === 'type') {
+        const text = typeof step.content === 'string' ? step.content : (typeof step.text === 'string' ? step.text : '');
+        // Persist the text onto currentStepTarget for visibility downstream
+        currentStepTarget = { id: step.id || `Step ${currentStepIdx+2}`, type: 'type', hints: step.hints || {}, content: text };
+        // Show text in UI box immediately
+        try { document.getElementById('step4Text').textContent = text || ''; } catch {}
+        // Type into currently focused element
+        sendWS({ type: 'TYPE_TEXT', text });
+        // If there is no explicit next button action (planner did not provide next click), press Enter once
+        const hasNextClick = (() => {
+          try {
+            const ni = currentStepIdx + 1;
+            const s = Array.isArray(planActionSteps) ? planActionSteps[ni] : null;
+            return s && s.type === 'click_by_candidates';
+          } catch { return false; }
+        })();
+        setTimeout(() => {
+          if (!hasNextClick) {
+            sendWS({ type: 'PRESS_ENTER' });
+          }
+          // Advance to next step after a short settle
+          setTimeout(() => {
+            if (recipeMode && typeof advanceRecipe === 'function') {
+              try { advanceRecipe(); } catch {}
+            } else if (runningPlan) {
+              const nextIdx = currentStepIdx + 1;
+              if (nextIdx < planActionSteps.length) {
+                runStepAt(nextIdx);
+              } else {
+                runningPlan = false; stepMode = false; currentStepTarget = null; currentStepIdx = -1; planActionSteps = [];
+                const sb = document.getElementById('saveBar'); if (sb) sb.style.display = 'flex';
+              }
+            }
+          }, 250);
+        }, 250);
+      }
+    }
+    // --- Click verification helpers ---
+    async function ensureVerifier() {
+      try {
+        const ready = new Promise((resolve) => {
+          const handler = (ev) => {
+            try {
+              const m = JSON.parse(ev.data);
+              if (m && m.type === 'CLICK_VERIFIER_READY') {
+                ws.removeEventListener('message', handler);
+                resolve(true);
+              }
+            } catch {}
+          };
+          ws.addEventListener('message', handler);
+          // Safety timeout
+          setTimeout(() => { ws.removeEventListener('message', handler); resolve(false); }, 1500);
+        });
+        ws.send(JSON.stringify({ type: 'INJECT_CLICK_VERIFIER' }));
+        await ready;
+      } catch {
+        await new Promise(r => setTimeout(r, 150));
+      }
+    }
+    function normalize(s){ return (s||'').toString().trim().replace(/\s+/g,' ').toLowerCase(); }
+    function summarizeVerification(v){
+      if (!v || typeof v !== 'object') return { success:false, matchType:'none', mode:'stack', clicked:null, target:null };
+      // If combined gate result, pick winner for display
+      if (v.gate === 'href_or_stack') {
+        if (v.hrefResult && v.hrefResult.success) return summarizeVerification(v.hrefResult);
+        if (v.stackResult && v.stackResult.success) return summarizeVerification(v.stackResult);
+        // Neither succeeded: still return minimal fields
+        return {
+          success: false,
+          matchType: 'none',
+          mode: (v.hrefResult && v.hrefResult.mode) || 'stack',
+          clicked: (v.hrefResult && (v.hrefResult.actual || v.hrefResult.clicked)) || (v.stackResult && v.stackResult.clicked) || null,
+          target: (v.hrefResult && v.hrefResult.expected) || (v.stackResult && v.stackResult.target) || null
+        };
+      }
+      // Href-based results
+      if (v.matchType === 'href' || v.matchType === 'href_domain') {
+        return {
+          success: !!v.success,
+          matchType: v.matchType,
+          mode: v.mode || 'host_path',
+          clicked: v.actual || v.clicked || null, // show actual for href
+          target: v.expected || null
+        };
+      }
+      // Stack-based results
+      return {
+        success: !!v.success,
+        matchType: v.matchType || 'none',
+        mode: 'stack',
+        clicked: v.clicked || null,
+        target: v.target || null
+      };
+    }
+    function pickDebugFields(x) {
+      if (!x || typeof x !== 'object') return null;
+      const dbg = {};
+      if ('source' in x) dbg.source = x.source;
+      if ('chainLength' in x) dbg.chainLength = x.chainLength;
+      if ('chainSample' in x) dbg.chainSample = x.chainSample;
+      if ('attempts' in x) dbg.attempts = x.attempts;
+      if ('elapsedMs' in x) dbg.elapsedMs = x.elapsedMs;
+      if ('compared' in x) dbg.compared = x.compared;
+      if ('idExactCount' in x) dbg.idExactCount = x.idExactCount;
+      if ('idBaseCount' in x) dbg.idBaseCount = x.idBaseCount;
+      if ('selectorCount' in x) dbg.selectorCount = x.selectorCount;
+      if ('roleNameCount' in x) dbg.roleNameCount = x.roleNameCount;
+      if ('mode' in x) dbg.mode = x.mode;
+      if ('expected' in x) dbg.expected = x.expected;
+      if ('actual' in x) dbg.actual = x.actual;
+      if ('beforeHost' in x) dbg.beforeHost = x.beforeHost;
+      return dbg;
+    }
+    function showVerification(v){
+      try {
+        const summary = summarizeVerification(v);
+        const debug = pickDebugFields(v);
+        if (v && v.gate === 'href_or_stack') {
+          debug.hrefResult = pickDebugFields(v.hrefResult);
+          debug.stackResult = pickDebugFields(v.stackResult);
+        }
+        document.getElementById('verification').textContent = JSON.stringify({ ...summary, debug }, null, 2);
+      } catch {}
+    }
+    // URL helpers for href-based verification
+    function normalizeHost(host){ host = (host||'').toLowerCase(); if (host.startsWith('www.')) host = host.slice(4); return host; }
+    function normalizePath(path){ if (!path) return '/'; let p = path.replace(/\\+/g,'/'); if (!p.startsWith('/')) p = '/' + p; if (p.length > 1 && p.endsWith('/')) p = p.slice(0, -1); return p; }
+    function firstPathPrefix(path, maxSegments = 2){ const p = normalizePath(path); const parts = p.split('/').filter(Boolean); const take = Math.min(parts.length, Math.max(1, maxSegments)); return '/' + parts.slice(0, take).join('/'); }
+    function resolveAbsoluteUrl(href, baseUrl){ try { return new URL(href, baseUrl).toString(); } catch { return ''; } }
+    async function getCurrentUrl(){
+      return await new Promise(resolve => {
+        const handler = (ev) => { try { const m = JSON.parse(ev.data); if (m && m.type === 'URL') { ws.removeEventListener('message', handler); resolve(m.url || ''); } } catch {} };
+        ws.addEventListener('message', handler);
+        try { ws.send(JSON.stringify({ type: 'GET_URL' })); } catch {}
+        setTimeout(() => { ws.removeEventListener('message', handler); resolve(''); }, 1200);
+      });
+    }
+    async function verifyClickHref(targetHref, timeoutMs = 8000){
+      const beforeUrl = await getCurrentUrl();
+      const expectedAbs = resolveAbsoluteUrl(String(targetHref||''), beforeUrl || location.href);
+      let expected;
+      try { expected = new URL(expectedAbs); } catch { expected = null; }
+      if (!expected) return { success:false, matchType:'href_domain', mode:'domain_only', reason:'bad_expected', expectedHref: targetHref, beforeUrl, attempts: 0 };
+      const expectedHost = normalizeHost(expected.host);
+      const expectedPrefix = firstPathPrefix(expected.pathname, 2);
+      let beforeHost = '';
+      try { beforeHost = normalizeHost(new URL(beforeUrl || location.href).host); } catch { beforeHost = ''; }
+      const crossDomain = !!beforeHost && expectedHost !== beforeHost;
+      const start = Date.now();
+      let polls = 0; let lastUrl = '';
+      while (Date.now() - start < timeoutMs) {
+        polls += 1;
+        const now = await getCurrentUrl();
+        lastUrl = now || '';
+        try {
+          const u = new URL(lastUrl);
+          const actualHost = normalizeHost(u.host);
+          const actualPath = normalizePath(u.pathname);
+          const hostOk = actualHost === expectedHost;
+          const pathOk = actualPath.startsWith(expectedPrefix);
+          if (crossDomain) {
+            if (hostOk) {
+              return { success:true, matchType:'href_domain', mode:'domain_only', clicked:{ href:lastUrl }, expected:{ host:expectedHost }, actual:{ host:actualHost }, beforeHost, attempts: polls, elapsedMs: Date.now() - start };
+            }
+          } else {
+            if (hostOk && pathOk) {
+              return { success:true, matchType:'href', mode:'host_path', clicked:{ href:lastUrl }, expected:{ host:expectedHost, prefix:expectedPrefix }, actual:{ host:actualHost, path:actualPath }, beforeHost, attempts: polls, elapsedMs: Date.now() - start };
+            }
+          }
+        } catch {}
+        await new Promise(r=>setTimeout(r, 300));
+      }
+      // If timed out, report debug
+      let actualHost = '', actualPath = '';
+      try { const u = new URL(lastUrl); actualHost = normalizeHost(u.host); actualPath = normalizePath(u.pathname); } catch {}
+      if (crossDomain) {
+        return { success:false, matchType:'href_domain', mode:'domain_only', clicked:{ href:lastUrl }, expected:{ host:expectedHost }, actual:{ host:actualHost }, beforeHost, attempts: polls, elapsedMs: Date.now() - start };
+      }
+      return { success:false, matchType:'href', mode:'host_path', clicked:{ href:lastUrl }, expected:{ host:expectedHost, prefix:expectedPrefix }, actual:{ host:actualHost, path:actualPath }, beforeHost, attempts: polls, elapsedMs: Date.now() - start };
+    }
+    async function fetchLastClickChain(timeoutMs=600){
+      return await new Promise((resolve)=>{
+        let done=false; const finish=(v)=>{ if(done) return; done=true; resolve(v); };
+        const handler = (ev)=>{ try{ const m=JSON.parse(ev.data); if(m && m.type==='CLICK_CHAIN'){ ws.removeEventListener('message', handler); finish(m); } }catch{} };
+        ws.addEventListener('message', handler);
+        try { ws.send(JSON.stringify({ type: 'GET_LAST_CLICK_CHAIN' })); } catch {}
+        setTimeout(()=>{ ws.removeEventListener('message', handler); finish(null); }, timeoutMs);
+      });
+    }
+    function tryDecodeWindowNameFallback(){
+      try {
+        const nm = String(window.name || '');
+        if (!nm.startsWith('WOCR:')) return null;
+        const obj = JSON.parse(atob(nm.slice(5)));
+        try { window.name = obj && obj.prev ? String(obj.prev) : ''; } catch {}
+        if (obj && Array.isArray(obj.chain) && obj.chain.length) {
+          return { type:'CLICK_CHAIN', ts: Number(obj.ts)||Date.now(), frameUrl: String(obj.frameUrl||location.href), chain: obj.chain };
+        }
+      } catch {}
+      return null;
+    }
+    function verifyAgainstTarget(chain, target){
+      const tId = (target && target.id) || '';
+      const tSel = (target && target.selector) || '';
+      const tRole = normalize(target && target.role);
+      const tName = normalize(target && target.name);
+      const tIdBase = tId ? String(tId).split('-')[0] : '';
+      const base = { target:{ id:tId, selector:tSel, role:tRole, name:tName } };
+      const chainArr = Array.isArray(chain) ? chain : [];
+      const chainLength = chainArr.length;
+      const idMatches = [];
+      const idBaseMatches = [];
+      const selectorMatches = [];
+      const roleNameMatches = [];
+      if (chainLength === 0) return { success:false, matchType:'none', clicked:null, compared: { chainLength, idsTested: 0, selectorsTested: 0, roleNameTested: 0 }, ...base };
+      // Pre-scan and collect matches/counters
+      for (let i=0;i<chainArr.length;i++){
+        const node = chainArr[i] || {};
+        const nId = node.id || '';
+        const nSel = node.selector || '';
+        const nRole = normalize(node.role);
+        const nName = normalize(node.name);
+        if (tId && nId && nId === tId) idMatches.push(i);
+        if (tIdBase && nId && nId === tIdBase) idBaseMatches.push(i);
+        if (tSel && nSel && nSel === tSel) selectorMatches.push(i);
+        if (tRole && tName && nRole === tRole && !!nName && (nName === tName || nName.includes(tName))) roleNameMatches.push(i);
+      }
+      const debug = {
+        compared: {
+          chainLength,
+          idsTested: chainLength,
+          selectorsTested: chainLength,
+          roleNameTested: chainLength
+        },
+        idExactCount: idMatches.length,
+        idBaseCount: idBaseMatches.length,
+        selectorCount: selectorMatches.length,
+        roleNameCount: roleNameMatches.length
+      };
+      if (idMatches.length > 0) {
+        const idx = idMatches[0]; const nid = chainArr[idx]?.id || '';
+        return { success:true, matchType:'id', clicked:{ id:nid }, ...debug, ...base };
+      }
+      if (idBaseMatches.length > 0) {
+        const idx = idBaseMatches[0]; const nid = chainArr[idx]?.id || '';
+        return { success:true, matchType:'id_base', clicked:{ id:nid }, ...debug, ...base };
+      }
+      if (selectorMatches.length > 0) {
+        const idx = selectorMatches[0]; const nsel = chainArr[idx]?.selector || '';
+        return { success:true, matchType:'selector', clicked:{ selector:nsel }, ...debug, ...base };
+      }
+      if (roleNameMatches.length > 0) {
+        const idx = roleNameMatches[0]; const nRole = normalize(chainArr[idx]?.role); const nName = normalize(chainArr[idx]?.name);
+        return { success:true, matchType:'role_name', clicked:{ role:nRole, name:nName }, ...debug, ...base };
+      }
+      return { success:false, matchType:'none', clicked:null, ...debug, ...base };
+    }
+    async function verifyClick(target, minTs){
+      // Poll for a fresh chain whose timestamp >= minTs (the time we clicked)
+      const start = Date.now();
+      let attempt = 0;
+      const maxWait = 2000;
+      let last = null;
+      while (Date.now() - start < maxWait) {
+        attempt += 1;
+        let res = await fetchLastClickChain(600);
+        last = res;
+        const hasChain = !!(res && Array.isArray(res.chain) && res.chain.length);
+        const tsOk = hasChain && (!minTs || (res.ts && res.ts >= minTs - 5));
+        if (tsOk) {
+          const v = verifyAgainstTarget(res.chain, target||{});
+          const elapsed = Date.now() - start;
+          const sample = (Array.isArray(res.chain) ? res.chain.slice(0, 3) : []).map(n => ({ id: n.id||'', selector: n.selector||'', role: n.role||'', name: (n.name||'').slice(0,32) }));
+          return { ...v, source: 'ws', chainLength: res.chain.length, chainSample: sample, ts: res.ts || Date.now(), frameUrl: res.frameUrl || null, attempts: attempt, elapsedMs: elapsed };
+        }
+        // attempt decode window.name payload if chain still empty
+        if (!hasChain) {
+          const local = tryDecodeWindowNameFallback();
+          if (local && Array.isArray(local.chain) && local.chain.length) {
+            const v2 = verifyAgainstTarget(local.chain, target||{});
+            const elapsed2 = Date.now() - start;
+            const sample2 = local.chain.slice(0,3).map(n => ({ id: n.id||'', selector: n.selector||'', role: n.role||'', name: (n.name||'').slice(0,32) }));
+            return { ...v2, source: 'window.name', chainLength: local.chain.length, chainSample: sample2, ts: local.ts || Date.now(), frameUrl: local.frameUrl || null, attempts: attempt, elapsedMs: elapsed2 };
+          }
+        }
+        // small staggered backoff
+        await new Promise(r=>setTimeout(r, Math.min(100 + attempt*80, 400)));
+      }
+      const usedChain = (last && Array.isArray(last.chain)) ? last.chain : [];
+      const v = verifyAgainstTarget(usedChain, target||{});
+      const elapsed = Date.now() - start;
+      const sample3 = usedChain.slice(0,3).map(n => ({ id: n.id||'', selector: n.selector||'', role: n.role||'', name: (n.name||'').slice(0,32) }));
+      return { ...v, source: 'none', chainLength: usedChain.length, chainSample: sample3, ts: (last && last.ts) || Date.now(), frameUrl: (last && last.frameUrl) || null, attempts: attempt, elapsedMs: elapsed, stale: true };
+    }
+    document.getElementById('btnGeneratePlan').onclick = async () => {
+      const openaiApiKey = localStorage.getItem('plannerOpenaiKey') || '';
+      const model = localStorage.getItem('plannerModel') || 'gpt-5';
+      const prompt = plannerPromptEl.value || '';
+      plannerSentEl.textContent = 'Preparing…';
+      if (!openaiApiKey) { plannerOutEl.textContent = 'Missing Planner API key'; return; }
+      try {
+        const res = await fetch('/nl2plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt, openaiApiKey, model }) });
+        const json = await res.json();
+        if (!json.ok && json.error) { plannerOutEl.textContent = json.error; return; }
+        if (json.sent) plannerSentEl.textContent = json.sent; else plannerSentEl.textContent = prompt;
+        const out = json.parsed ? json.parsed : (json.raw || '');
+        lastPlan = (out && typeof out === 'object') ? out : null;
+        plannerOutEl.textContent = (typeof out === 'string') ? out : JSON.stringify(out, null, 2);
+      } catch (e) {
+        plannerOutEl.textContent = String(e.message || e);
+      }
+    };
+
+    // Execute a generated plan using existing pipeline primitives
+    document.getElementById('btnRunPlan').onclick = async () => {
+      if (runningPlan) { alert('A plan is already running. Please wait for it to finish.'); return; }
+      // Generate plan first (combine generate + run)
+      try {
+        const openaiApiKey = localStorage.getItem('plannerOpenaiKey') || '';
+        const model = localStorage.getItem('plannerModel') || 'gpt-5';
+        const prompt = plannerPromptEl.value || '';
+        plannerSentEl.textContent = 'Preparing…';
+        if (!openaiApiKey) { alert('Missing Planner API key'); return; }
+        const res = await fetch('/nl2plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt, openaiApiKey, model }) });
+        const json = await res.json();
+        if (!json.ok && json.error) { alert(json.error); return; }
+        if (json.sent) plannerSentEl.textContent = json.sent; else plannerSentEl.textContent = prompt;
+        const out = json.parsed ? json.parsed : (json.raw || '');
+        lastPlan = (out && typeof out === 'object') ? out : null;
+        plannerOutEl.textContent = (typeof out === 'string') ? out : JSON.stringify(out, null, 2);
+      } catch (e) { alert('Planner error: ' + (e.message||e)); return; }
+      if (!lastPlan || !Array.isArray(lastPlan.steps)) { alert('Planner returned no steps'); return; }
+      // Ensure browser is focused
+      sendWS({ type: 'FOCUS' });
+      // Always navigate to the plan's first navigate URL if present
+      const navigateStep = lastPlan.steps.find(s => s && s.type === 'navigate' && s.url);
+      if (navigateStep && typeof navigateStep.url === 'string' && navigateStep.url.trim()) {
+        // Explicitly request focus, then navigate and wait for NAVIGATED; retry once if URL mismatch
+        const targetUrl = navigateStep.url.trim();
+        sendWS({ type: 'FOCUS' });
+        sendWS({ type: 'NAVIGATE', url: targetUrl });
+        let navOk = false;
+        try {
+          const nav = await waitForWs(m => m && m.type === 'NAVIGATED', 8000);
+          if (nav && typeof nav.url === 'string') navOk = true;
+        } catch {}
+        if (!navOk) {
+          // Retry once
+          sendWS({ type: 'NAVIGATE', url: targetUrl });
+          try { await waitForWs(m => m && m.type === 'NAVIGATED', 8000); } catch {}
+        }
+        sendWS({ type: 'FOCUS' });
+      }
+      // Collect all actionable steps (exclude navigate) and run sequentially
+      planActionSteps = Array.isArray(lastPlan.steps)
+        ? lastPlan.steps.filter(s => s && s.type && s.type !== 'navigate')
+        : [];
+      if (!planActionSteps.length) { alert('No actionable step (after navigate) found in plan.'); return; }
+      // Initialize temp journal on server
+      try {
+        const navUrl = (navigateStep && typeof navigateStep.url === 'string') ? navigateStep.url.trim() : '';
+        const domain = (()=>{ try{ const u=new URL(navUrl||''); return u.hostname||''; }catch{return '';} })();
+        const intentPatterns = Array.isArray(lastPlan.intent_patterns) ? lastPlan.intent_patterns : ((plannerPromptEl.value||'').toLowerCase().split(/[,;\n]+/).map(s=>s.trim()).filter(Boolean).slice(0,4));
+        const run_token = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`;
+        const init = { plan_id: lastPlan.plan_id || `plan-${Date.now()}`, run_token, intent: lastPlan.intent || (plannerPromptEl.value||'').slice(0,64), domain, intent_patterns: intentPatterns, url: navUrl };
+        await fetch('/recipes/journal/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(init) });
+      } catch {}
+      runningPlan = true;
+      runStepAt(0);
+    };
+
+    let lastCandidates = [];
+    let lastStep3 = { prompt: '', elements: [] };
+    function deriveCurrentTarget() {
+      // Prefer explicit current step target
+      if (currentStepTarget && currentStepTarget.type === 'click_by_candidates') return currentStepTarget;
+      // Try to derive from current plan step (when available)
+      try {
+        if (Array.isArray(planActionSteps) && currentStepIdx >= 0) {
+          const s = planActionSteps[currentStepIdx];
+          if (s && s.type === 'click_by_candidates') {
+            const textHints = Array.isArray(s.name) ? s.name : (typeof s.name === 'string' && s.name.trim() ? [s.name] : []);
+            return { id: s.id || `Step ${s.step || (currentStepIdx + 2)}`, type: 'click_by_candidates', hints: s.hints || { text: textHints, roles: [] } };
+          }
+        }
+      } catch {}
+      // Fallback to last known target from prior Step 3
+      if (lastStep3 && lastStep3.target && lastStep3.target.type === 'click_by_candidates') return lastStep3.target;
+      return null;
+    }
+    // Assistant 2 creds persist
+    const keyEl2 = document.getElementById('openaiKey2');
+    const asstEl2 = document.getElementById('assistantId2');
+    keyEl2.value = localStorage.getItem('openaiApiKey2') || '';
+    asstEl2.value = localStorage.getItem('assistantId2') || '';
+    document.getElementById('btnSave2').onclick = () => {
+      localStorage.setItem('openaiApiKey2', keyEl2.value || '');
+      localStorage.setItem('assistantId2', asstEl2.value || '');
+      document.getElementById('saveMsg').textContent = 'Saved';
+      setTimeout(()=> document.getElementById('saveMsg').textContent = '', 1000);
+    };
+
+    document.getElementById('btnOpenBrowser').onclick = () => sendWS({ type: 'FOCUS' });
+    document.getElementById('btnOpenDashboard').onclick = () => sendWS({ type: 'NAVIGATE', url: 'https://dashboard.nerovaautomation.com' });
+    document.getElementById('btnRunNoPlanner').onclick = async () => {
+      // Start a screen-first run without generating a plan
+      try {
+        noPlannerMode = true; runningPlan = true; stepMode = false; recipeMode = false; currentStepIdx = -1; planActionSteps = [];
+        // Seed with a single generic action step that will be guided by the critic per iteration
+        planActionSteps = [ { id: 'Step 2', type: 'click_by_candidates', hints: { text: [], roles: [] } } ];
+        // Bring browser to front
+        sendWS({ type: 'FOCUS' });
+        // URL Bootstrap Critic: decide initial URL once (screen-first, no planner)
+        try {
+          const openaiApiKey = localStorage.getItem('criticOpenaiKey') || '';
+          const model = localStorage.getItem('criticModel') || 'gpt-5-nano';
+          if (openaiApiKey) {
+            const basePrompt = (plannerPromptEl.value || promptEl.value || '');
+            const currentUrl = await getCurrentUrl();
+            const urlCriticSys = `SYSTEM (URL Bootstrap Critic)
+
+You are the URL Bootstrap Critic. The goal is stated by the user prompt. Decide the single best initial URL to open NOW to advance toward the final goal.
+
+Rules:
+- Output ONLY a single JSON object (no prose, no markdown, no code fences).
+- Allowed actions (choose ONE): navigate | proceed
+- If action=navigate:
+  - url: HTTPS, official/canonical page (no shorteners). Remove tracking query unless required.
+  - Prefer the most direct landing page that matches the goal keywords
+- If action=proceed: current page is already correct to start the task
+- Include a short reason and numeric confidence 0..1
+- Be screen-first: if the current URL already matches the intended destination (host/page), choose proceed; otherwise choose the best URL
+- Do not reference any recipes or plans
+
+Expected outputs (examples):
+{ "action": "navigate", "url": "https://www.ubereats.com/", "reason": "Open to begin search.", "confidence": 0.92 }
+{ "action": "proceed", "reason": "Already on correct site.", "confidence": 0.88 }`;
+            const urlBody = {
+              openaiApiKey,
+              model,
+              system: urlCriticSys,
+              user: JSON.stringify({ goal: { original_prompt: basePrompt }, context: { current_url: currentUrl || '' } })
+            };
+            const r = await fetch('/critic', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(urlBody) });
+            const j = await r.json();
+            const decision = (j && (j.parsed || j)) || null;
+            if (decision && decision.action === 'navigate' && typeof decision.url === 'string' && decision.url.trim()) {
+              const targetUrl = decision.url.trim();
+              try {
+                sendWS({ type: 'FOCUS' });
+                sendWS({ type: 'NAVIGATE', url: targetUrl });
+                try { await waitForWs(m => m && m.type === 'NAVIGATED', 8000); } catch {}
+                sendWS({ type: 'FOCUS' });
+              } catch {}
+            }
+          }
+        } catch {}
+        // Kick off step runner at index 0
+        runStepAt(0);
+      } catch (e) { alert('No-planner run error: ' + (e.message||e)); }
+    };
+    
+
+    document.getElementById('btnCollect').onclick = () => {
+      sendWS({ type: 'GRAB_CANDIDATE_STRINGS', options: { minSize: 8, max: 2000 } });
+    };
+
+    let pendingSend = false;
+    let lastAssistantIds = [];
+    let pendingIframeCheck = false;
+    let noIdsAttempts = 0;
+    let notHittableAttempts = 0;
+    let recipeScrollAttempts = 0;
+    // Global scroll guard (time guard + attempt guard + backoff), applied project-wide
+    let lastNavigatedAt = 0;
+    const scrollGuard = {
+      timeWindowMs: 8000,           // no scroll within first 8s after navigate
+      minAttemptsBeforeScroll: 3,   // require >=3 failures before scrolling
+      baseDelayMs: 300,
+      maxDelayMs: 2500,
+      reasonToAttempts: new Map(),  // reason -> count
+      reasonToDelay: new Map()      // reason -> current delay
+    };
+    function resetScrollGuard(url) {
+      lastNavigatedAt = Date.now();
+      scrollGuard.reasonToAttempts.clear();
+      scrollGuard.reasonToDelay.clear();
+    }
+    function noteFailure(reason) {
+      const c = (scrollGuard.reasonToAttempts.get(reason) || 0) + 1;
+      scrollGuard.reasonToAttempts.set(reason, c);
+    }
+    function nextDelay(reason) {
+      const d = scrollGuard.reasonToDelay.get(reason) || scrollGuard.baseDelayMs;
+      const nd = Math.min(scrollGuard.maxDelayMs, Math.round(d * 1.7));
+      scrollGuard.reasonToDelay.set(reason, nd);
+      return d; // use current; next call increases
+    }
+    function canScroll(reason) {
+      if (Date.now() - lastNavigatedAt < scrollGuard.timeWindowMs) return false;
+      const c = scrollGuard.reasonToAttempts.get(reason) || 0;
+      return c >= scrollGuard.minAttemptsBeforeScroll;
+    }
+    function maybeScroll(reason, after) {
+      const delay = nextDelay(reason);
+      if (canScroll(reason)) {
+        ws.send(JSON.stringify({ type: 'SCROLL_UNIVERSAL', direction: 'down' }));
+        setTimeout(() => { try { after && after(); } catch {} }, Math.max(700, delay));
+      } else {
+        setTimeout(() => { try { after && after(); } catch {} }, delay);
+      }
+    }
+    ws.addEventListener('message', async (ev) => {
+      try {
+        const msg = JSON.parse(ev.data);
+        // On navigation to a new URL, reset guards
+        if (msg && msg.type === 'NAVIGATED') {
+          resetScrollGuard(msg.url || '');
+          // Re-inject click verifier on each navigation
+          try { ws.send(JSON.stringify({ type: 'INJECT_CLICK_VERIFIER' })); } catch {}
+        }
+        if (pendingIframeCheck && msg && Array.isArray(msg.iframes)) {
+          pendingIframeCheck = false;
+          // Do not auto-scroll; just retry collection up to 10 attempts
+          noIdsAttempts = (noIdsAttempts || 0) + 1;
+          if (noIdsAttempts < 10) {
+            setTimeout(() => {
+              pendingSend = true;
+              sendWS({ type: 'GRAB_CANDIDATE_STRINGS', options: { minSize: 8, max: 2000 } });
+            }, Math.min(300 + noIdsAttempts * 150, 2000));
+          }
+        }
+        if (msg.candidates) {
+          // Reset no-ids retry counter when candidates arrive
+          noIdsAttempts = 0;
+          lastCandidates = msg.candidates;
+          // Only send if more than 15, otherwise show but still can send
+          const k = 15;
+          let body;
+          const tgtNow = deriveCurrentTarget();
+          if (tgtNow) {
+            body = { target: tgtNow, k, candidates: lastCandidates };
+          } else {
+            body = { prompt: promptEl.value || '', k, candidates: lastCandidates };
+          }
+          candidatesEl.textContent = JSON.stringify(body, null, 2);
+          if (pendingSend) {
+            pendingSend = false;
+            if (lastCandidates.length > 15) {
+              const openaiApiKey = localStorage.getItem('openaiApiKey') || '';
+              const assistantId = localStorage.getItem('assistantId') || '';
+              const res = await fetch('/nl2web', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ...body, openaiApiKey, assistantId })
+              });
+              const out = await res.json();
+              assistantOutEl.textContent = JSON.stringify(out, null, 2);
+              lastAssistantIds = Array.isArray(out?.id) ? out.id : [];
+              if (lastAssistantIds.length) {
+                // Auto-fetch Step 3 detailed hittables for these ids
+                sendWS({ type: 'GET_HITTABLES_BY_IDS', ids: lastAssistantIds });
+            } else {
+              // Assistant 1 returned no ids: retry up to 10 attempts without scrolling
+              noIdsAttempts = (noIdsAttempts || 0) + 1;
+              if (noIdsAttempts >= 10) {
+                assistantOutEl.textContent = JSON.stringify({ error: 'No candidates after 10 retries' }, null, 2);
+              } else {
+                setTimeout(() => {
+                  pendingSend = true;
+                  sendWS({ type: 'GRAB_CANDIDATE_STRINGS', options: { minSize: 8, max: 2000 } });
+                }, Math.min(300 + noIdsAttempts * 150, 2000));
+              }
+            }
+            } else {
+              // Bypass Assistant 1 for small sets. Use all IDs directly.
+              lastAssistantIds = lastCandidates.map(c => c.id).filter(Boolean);
+              assistantOutEl.textContent = JSON.stringify({ id: lastAssistantIds }, null, 2);
+              if (lastAssistantIds.length) {
+                sendWS({ type: 'GET_HITTABLES_BY_IDS', ids: lastAssistantIds });
+              } else {
+                // No small-set candidates: retry up to 10 times without scrolling
+                noIdsAttempts = (noIdsAttempts || 0) + 1;
+                if (noIdsAttempts >= 10) {
+                  assistantOutEl.textContent = JSON.stringify({ error: 'No candidates after 10 retries' }, null, 2);
+                } else {
+                  setTimeout(() => {
+                    pendingSend = true;
+                    sendWS({ type: 'GRAB_CANDIDATE_STRINGS', options: { minSize: 8, max: 2000 } });
+                  }, Math.min(300 + noIdsAttempts * 150, 2000));
+                }
+              }
+            }
+          }
+        }
+        if (msg.type === 'STEP3' && msg.elements) {
+          // Reset not-hittable retry counter on fresh Step 3 data
+          notHittableAttempts = 0;
+          // Prefer per-step target when running a plan; otherwise fall back to prompt text
+          const tgtNow2 = deriveCurrentTarget();
+          if (tgtNow2) { lastStep3 = { target: tgtNow2, elements: msg.elements }; }
+          else { lastStep3 = { prompt: promptEl.value || '', elements: msg.elements }; }
+          step3El.textContent = JSON.stringify(lastStep3, null, 2);
+          // In recipe mode, click directly from STEP3 without Assistant 2
+          if (recipeMode) {
+            try {
+              const curStep = (Array.isArray(planActionSteps) && currentStepIdx >= 0) ? planActionSteps[currentStepIdx] : null;
+              let el = null;
+              if (Array.isArray(msg.elements)) {
+                if (curStep && curStep.id) {
+                  el = msg.elements.find(e => e && e.id === curStep.id) || null;
+                }
+              }
+              if (el && Array.isArray(el.center) && el.center.length === 2) {
+                // If element is not currently hittable: scroll and retry pulling the SAME id (recipe mode)
+                if ((el.hit_state || '') !== 'hittable') {
+                  recipeScrollAttempts = (recipeScrollAttempts || 0) + 1;
+                  if (recipeScrollAttempts <= 20) {
+                    try { ws.send(JSON.stringify({ type: 'SCROLL_UNIVERSAL', direction: 'down' })); } catch {}
+                    setTimeout(() => {
+                      try {
+                        if (curStep && curStep.id) {
+                          lastAssistantIds = [curStep.id];
+                          sendWS({ type: 'GET_HITTABLES_BY_IDS', ids: lastAssistantIds });
+                        }
+                      } catch {}
+                    }, 700);
+                  }
+                  return;
+                }
+                // Click if hittable or after fallback, then verify
+                const [vx, vy] = el.center;
+                await ensureVerifier();
+                const clickTs = Date.now();
+                ws.send(JSON.stringify({ type: 'CLICK_VIEWPORT', vx, vy }));
+                let finalRes3;
+                if (el && typeof el.href === 'string' && el.href) {
+                  // In recipe mode (continue=true), prefer href verification from Step 3 element
+                  const hrefRes3 = await verifyClickHref(el.href);
+                  if (hrefRes3 && hrefRes3.mode === 'domain_only') {
+                    // Cross-domain: ONLY check the domain
+                    finalRes3 = hrefRes3;
+                  } else {
+                    // Same-domain: allow href(host+prefix) OR stack-based
+                    const stackRes3 = await verifyClick({ id: el.id || null, selector: el.selector || null, role: el.role || '', name: el.name || '' }, clickTs);
+                    finalRes3 = { success: !!(hrefRes3 && hrefRes3.success) || !!(stackRes3 && stackRes3.success), gate: 'href_or_stack', hrefResult: hrefRes3 || null, stackResult: stackRes3 || null };
+                  }
+                } else {
+                  // No href: stack-only
+                  finalRes3 = await verifyClick({ id: el.id || null, selector: el.selector || null, role: el.role || '', name: el.name || '' }, clickTs);
+                }
+                showVerification(finalRes3);
+                if (!finalRes3.success) { runningPlan = false; recipeMode = false; return; }
+                // If this recipe step includes content, type it now before advancing
+                try {
+                  if (curStep && typeof curStep.content === 'string' && curStep.content.length > 0) {
+                    ws.send(JSON.stringify({ type: 'TYPE_TEXT', text: curStep.content }));
+                    await new Promise(r=>setTimeout(r, 250));
+                  }
+                } catch {}
+                // proceed
+                // append to journal
+                try {
+                  const stepNumber = (typeof currentStepIdx === 'number' && currentStepIdx >= 0) ? (currentStepIdx + 2) : 0;
+                  const step_token = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2,6)}`;
+                  await fetch('/recipes/journal/append', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ plan_id: lastPlan?.plan_id || '', step: stepNumber, step_token, id: el.id || null, name: el.name || null, action: 'click', role: (el.role || ''), selector: (el.selector || '') }) });
+                } catch {}
+                // Advance to next recipe step after 2 seconds
+                if (typeof advanceRecipe === 'function') {
+                  setTimeout(() => { try { advanceRecipe(); } catch {} }, 2000);
+                }
+              } else {
+                // Not found: scroll and retry pulling the SAME id (recipe mode)
+                recipeScrollAttempts = (recipeScrollAttempts || 0) + 1;
+                if (recipeScrollAttempts <= 20) {
+                  try { ws.send(JSON.stringify({ type: 'SCROLL_UNIVERSAL', direction: 'down' })); } catch {}
+                  setTimeout(() => {
+                    try {
+                      if (curStep && curStep.id) {
+                        lastAssistantIds = [curStep.id];
+                        sendWS({ type: 'GET_HITTABLES_BY_IDS', ids: lastAssistantIds });
+                      }
+                    } catch {}
+                  }, 700);
+                }
+                return;
+              }
+            } catch {}
+            return;
+          }
+          // Auto-run Step 4 if creds exist
+          const openaiApiKey2 = localStorage.getItem('openaiApiKey2') || '';
+          const assistantId2 = localStorage.getItem('assistantId2') || '';
+          if (!recipeMode && openaiApiKey2 && assistantId2) {
+            await sendStep3ToAssistant2(openaiApiKey2, assistantId2);
+          } else if (!recipeMode && noPlannerMode) {
+            // No-planner fallback: pick a best-effort element from STEP3 and click; type content if provided
+            try {
+              const tgt = deriveCurrentTarget();
+              const els = Array.isArray(msg.elements) ? msg.elements : [];
+              const roleSet = new Set(((tgt && tgt.hints && Array.isArray(tgt.hints.roles)) ? tgt.hints.roles : []).map(r => (r||'').toString().toLowerCase()));
+              const textsExact = new Set(((tgt && tgt.hints && Array.isArray(tgt.hints.text_exact)) ? tgt.hints.text_exact : []).map(s => (s||'').toString().trim().toLowerCase()));
+              const texts = ((tgt && tgt.hints && Array.isArray(tgt.hints.text)) ? tgt.hints.text : []).map(s => (s||'').toString().trim().toLowerCase());
+              function score(el){
+                let s = 0;
+                try {
+                  const role = (el.role||'').toLowerCase();
+                  const name = (el.name||'').toString().trim().toLowerCase();
+                  if (!roleSet.size || roleSet.has(role)) s += 2; else s -= 1;
+                  if (textsExact.size && textsExact.has(name)) s += 4;
+                  if (!textsExact.size && texts.length){ for (const t of texts){ if (t && name.includes(t)) { s += 2; break; } } }
+                  if (el.hit_state === 'hittable') s += 1; else if (el.hit_state === 'occluded') s -= 1;
+                  const r = Array.isArray(el.rect)? el.rect : [0,0,0,0]; const area = Math.max(0, r[2]) * Math.max(0, r[3]); s += Math.min(2, area/20000);
+                } catch {}
+                return s;
+              }
+              let best = null; let bestScore = -Infinity;
+              for (const el of els){ const sc = score(el); if (sc > bestScore){ best = el; bestScore = sc; } }
+              if (best && Array.isArray(best.center) && best.center.length === 2) {
+                await ensureVerifier();
+                const clickTsX = Date.now();
+                ws.send(JSON.stringify({ type: 'CLICK_VIEWPORT', vx: best.center[0], vy: best.center[1] }));
+                // Basic post-click verification (stack-based only) — non-blocking
+                try { await verifyClick({ id: best.id||null, selector: best.selector||null, role: best.role||'', name: best.name||'' }, clickTsX); } catch {}
+                // If content present, type now
+                try {
+                  const textToType = (tgt && typeof tgt.content === 'string') ? tgt.content : '';
+                  if (textToType) {
+                    ws.send(JSON.stringify({ type: 'TYPE_TEXT', text: textToType }));
+                  }
+                } catch {}
+                // Continue loop: in no-planner mode we keep running the same Step 2
+                setTimeout(() => { try { runStepAt(0); } catch {} }, 1200);
+              }
+            } catch {}
+          }
+        }
+      } catch {}
+    });
+
+    document.getElementById('btnSend').onclick = async () => {
+      // Auto-collect candidates first, then send to assistant
+      pendingSend = true;
+      sendWS({ type: 'GRAB_CANDIDATE_STRINGS', options: { minSize: 8, max: 2000 } });
+    };
+    document.getElementById('btnGetStep3').onclick = () => {
+      if (!lastAssistantIds.length) { alert('No ids found from assistant output'); return; }
+      sendWS({ type: 'GET_HITTABLES_BY_IDS', ids: lastAssistantIds });
+    };
+    async function sendStep3ToAssistant2(openaiApiKey, assistantId) {
+      try {
+        if (!lastStep3.elements.length) { step4El.textContent = 'No Step 3 elements yet'; return; }
+        const res = await fetch('/nl2web2', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(
+            lastStep3.target
+              ? { target: lastStep3.target, elements: lastStep3.elements, openaiApiKey, assistantId }
+              : { prompt: lastStep3.prompt, elements: lastStep3.elements, openaiApiKey, assistantId }
+          )
+        });
+        const json = await res.json();
+        // Show parsed if available; otherwise parse/clean raw text; no code fences
+        let out = null;
+        if (json && typeof json === 'object') {
+          if (json.parsed) {
+            out = json.parsed;
+          } else if (typeof json.raw === 'string') {
+            let s = json.raw.trim();
+            // Strip Markdown fences like ```json ... ```
+            if (s.startsWith('```')) {
+              s = s.replace(/```[a-zA-Z]*\n?/g, '').replace(/```/g, '').trim();
+            }
+            // Try extract JSON object substring
+            const m = s.match(/\{[\s\S]*\}/);
+            if (m) {
+              try { out = JSON.parse(m[0]); } catch { /* fallthrough */ }
+            }
+            if (!out) out = s;
+          } else {
+            out = json;
+          }
+        }
+        if (typeof out === 'string') {
+          step4El.textContent = out;
+        } else if (out && typeof out === 'object') {
+          step4El.textContent = JSON.stringify(out, null, 2);
+        } else {
+          step4El.textContent = JSON.stringify(out, null, 2);
+        }
+        // If confident enough and we have center, click automatically
+        try {
+          if (out && typeof out === 'object' && typeof out.confidence === 'number' && out.confidence >= 0.8) {
+            if (Array.isArray(out.center) && out.center.length === 2) {
+              const [vx, vy] = out.center;
+              await ensureVerifier();
+              const clickTs2 = Date.now();
+              ws.send(JSON.stringify({ type: 'CLICK_VIEWPORT', vx, vy }));
+              let finalRes;
+              if (out && typeof out.href === 'string' && out.href) {
+                // Step 4: href present → decide by domain logic
+                const hrefRes = await verifyClickHref(out.href);
+                if (hrefRes && hrefRes.mode === 'domain_only') {
+                  // Cross-domain: ONLY check the domain
+                  finalRes = hrefRes;
+                } else {
+                  // Same-domain: check BOTH href (host+prefix) OR stack-based; proceed if either passes
+                  const stackRes = await verifyClick({ id: out.id || null, selector: out.selector || null, role: out.role || '', name: out.name || '' }, clickTs2);
+                  finalRes = { success: !!(hrefRes && hrefRes.success) || !!(stackRes && stackRes.success), gate: 'href_or_stack', hrefResult: hrefRes || null, stackResult: stackRes || null };
+                }
+              } else {
+                // No href: ONLY check the clicked button stack
+                finalRes = await verifyClick({ id: out.id || null, selector: out.selector || null, role: out.role || '', name: out.name || '' }, clickTs2);
+              }
+              showVerification(finalRes);
+              if (!finalRes.success) { return; }
+              // If the step includes content, type it now before advancing
+              let textToType = '';
+              try {
+                if (typeof out.content === 'string' && out.content.length > 0) {
+                  textToType = out.content;
+                } else {
+                  const s = (Array.isArray(planActionSteps) && currentStepIdx >= 0) ? planActionSteps[currentStepIdx] : null;
+                  if (s && typeof s.content === 'string' && s.content.length > 0) textToType = s.content;
+                  else if (currentStepTarget && typeof currentStepTarget.content === 'string' && currentStepTarget.content.length > 0) textToType = currentStepTarget.content;
+                }
+              } catch {}
+              if (textToType) {
+                // Send TYPE_TEXT and wait for the explicit TYPED ack before submitting
+                const typeToken = `typed-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,6)}`;
+                await new Promise((resolve) => {
+                  const handlerTyped = (ev) => { try { const m = JSON.parse(ev.data); if (m && m.type === 'TYPED' && (!m.token || m.token === typeToken)) { ws.removeEventListener('message', handlerTyped); resolve(true); } } catch {} };
+                  ws.addEventListener('message', handlerTyped);
+                  try { ws.send(JSON.stringify({ type: 'TYPE_TEXT', text: textToType, token: typeToken })); } catch {}
+                  setTimeout(() => { ws.removeEventListener('message', handlerTyped); resolve(false); }, 4000);
+                });
+                // In no-planner mode (and generally for search inputs), press Enter once to submit
+                try { if (noPlannerMode) ws.send(JSON.stringify({ type: 'PRESS_ENTER' })); } catch {}
+              }
+              // Record previous action for critic context (click + optional type)
+              try {
+                lastAction = {
+                  action: (textToType ? 'click_and_type' : 'click'),
+                  target: {
+                    id: (out.id || currentStepTarget?.id || null),
+                    role: (out.role || ''),
+                    name: (out.name || ''),
+                    selector: (out.selector || '')
+                  },
+                  content: (textToType || '')
+                };
+              } catch {}
+              // proceed
+              // Append to temp journal with minimal details (no coordinates)
+              try {
+                const stepNumber = (typeof currentStepIdx === 'number' && currentStepIdx >=0) ? (currentStepIdx + 2) : 0;
+                const step_token = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2,6)}`;
+                await fetch('/recipes/journal/append', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ plan_id: lastPlan?.plan_id || '', step: stepNumber, step_token, id: out.id || null, name: out.name || null, action: (out.action || 'click'), role: (out.role || ''), selector: (out.selector || '') }) });
+              } catch {}
+            }
+          } else if (out && typeof out === 'object' && out.action === 'scroll') {
+            // Perform a full frame-aware scroll then retry Step 2
+            try { step4El.textContent = JSON.stringify(out, null, 2); } catch {}
+            try { ws.send(JSON.stringify({ type: 'SCROLL_BOTH', delta: 0.8 })); } catch {}
+            setTimeout(() => {
+              try {
+                pendingSend = true; // re-run Step 2 in the new viewport
+                sendWS({ type: 'GRAB_CANDIDATE_STRINGS', options: { minSize: 8, max: 2000 } });
+              } catch {}
+            }, 700);
+            // Do NOT advance to the next step until verification succeeds later
+            return;
+          }
+        } catch {}
+        // Advance to next step after 3s
+        if (recipeMode && typeof advanceRecipe === 'function') {
+          setTimeout(() => { try { advanceRecipe(); } catch {} }, 3000);
+        } else if (runningPlan) {
+          setTimeout(() => {
+            if (noPlannerMode) {
+              // Loop Step 2 in no-planner mode: re-prompt critic each iteration with updated screenshot
+              try { runStepAt(0); } catch {}
+            } else {
+              const nextIdx = currentStepIdx + 1;
+              if (nextIdx < planActionSteps.length) {
+                runStepAt(nextIdx);
+              } else {
+                runningPlan = false; stepMode = false; currentStepTarget = null; currentStepIdx = -1; planActionSteps = [];
+                // Show save bar
+                const sb = document.getElementById('saveBar'); if (sb) sb.style.display = 'flex';
+              }
+            }
+          }, (noPlannerMode ? 600 : 3000));
+        }
+      } catch (e) {
+        step4El.textContent = 'Assistant 2 error: ' + e.message;
+      }
+    }
+    // Save Yes/No handlers
+    document.getElementById('btnSaveYes').onclick = async () => {
+      try {
+        const sb = document.getElementById('saveBar');
+        const msg = document.getElementById('saveMsg2');
+        // Finalize journal into recipe on server; server mirrors temp with field normalization
+        const res = await fetch('/recipes/journal/finalize', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ plan_id: lastPlan?.plan_id || '' }) });
+        const json = await res.json();
+        if (!json.ok) throw new Error(json.error||'Save failed');
+        msg.textContent = 'Saved'; setTimeout(()=>{ msg.textContent=''; if (sb) sb.style.display='none'; }, 1200);
+      } catch (e) {
+        const msg = document.getElementById('saveMsg2'); msg.textContent = 'Error saving'; setTimeout(()=> msg.textContent='', 2000);
+      }
+    };
+    document.getElementById('btnSaveNo').onclick = async () => {
+      const sb = document.getElementById('saveBar'); if (sb) sb.style.display = 'none';
+      try { await fetch('/recipes/journal/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ plan_id: lastPlan?.plan_id || '' }) }); } catch {}
+    };
+    document.getElementById('btnSendStep3').onclick = async () => {
+      const openaiApiKey = localStorage.getItem('openaiApiKey2') || '';
+      const assistantId = localStorage.getItem('assistantId2') || '';
+      await sendStep3ToAssistant2(openaiApiKey, assistantId);
+    };
+  </script>
+</body>
+</html>

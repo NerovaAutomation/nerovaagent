@@ -1,0 +1,1354 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="theme-color" content="#000000" />
+  <title>Web Agent — UI</title>
+  <style>
+    :root {
+      /* Night theme palette (no blue accents) */
+      --bg: #000000;
+      --panel: #0f1117;
+      --panel-2: #0c0e13;
+      --text: #ecf0f8;
+      --muted: #98a2b3;
+      --border: #1a1d26;
+      --input: #11131a;
+      --input-focus: #161926;
+      --accent: #8b5cf6;       /* violet */
+      --accent-600: #7c3aed;   /* deeper violet */
+      --success: #22c55e;      /* green */
+      --warn: #f59e0b;         /* amber */
+    }
+    * { box-sizing: border-box; }
+    body { --sidebar-pad: 56px; font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif; background: var(--bg); color:var(--text); margin:0; transition: padding-left .2s ease; padding-left: var(--sidebar-pad); }
+    body.sidebar-open { --sidebar-pad: 280px; }
+    header { position: sticky; top: 0; z-index: 5; background: var(--bg); border-bottom: none; }
+    header .wrap { padding: 12px 16px; display:flex; align-items:center; gap:12px; }
+    header h1 { font-size: 16px; margin: 0; }
+    header .hint { color: var(--muted); font-size: 12px; margin-left:auto; }
+    #brandLogo { position: fixed; top: 10px; left: 10px; z-index: 30; transition: transform .12s ease, filter .12s ease; transform-origin: center; }
+    #brandLogo:hover { transform: translateY(-1px) scale(1.07); filter: drop-shadow(0 8px 18px rgba(139,92,246,.25)); }
+    .brand { position: relative; margin-left: -8px; }
+    .brand .title { display: inline-flex; align-items: center; background: transparent; border: none; color: var(--text); cursor: pointer; font-size: 16px; font-weight: 600; padding: 6px 8px; border-radius: 8px; }
+    .brand .title:hover { background: var(--input); }
+    /* Chevron indicator on brand button (single outline arrow on right) */
+    .brand .title::after {
+      content: "";
+      display: inline-block;
+      margin-left: 6px;
+      width: 6px; height: 6px;
+      border-right: 1.5px solid rgba(152,162,179,.7);
+      border-bottom: 1.5px solid rgba(152,162,179,.7);
+      transform: translateY(-2px) rotate(45deg);
+      transition: transform .2s ease;
+    }
+    /* Keep arrow static on expand */
+    .brand .title[aria-expanded="true"]::after { transform: translateY(-2px) rotate(45deg); }
+    .brand .menu { position: absolute; top: 36px; left: 0; background: var(--panel); border:1px solid var(--border); border-radius: 10px; padding: 6px; display: none; min-width: 200px; box-shadow: 0 10px 30px rgba(0,0,0,.35); }
+    .brand .menu.open { display: block; }
+    .brand .menu button { width: 100%; text-align: left; padding: 8px 10px; border-radius: 8px; border: 1px solid transparent; background: transparent; color: var(--text); cursor: pointer; }
+    .brand .menu button:hover { background: var(--input-focus); border-color: var(--border); }
+
+    .container { padding: 16px 16px 8px; max-width: 900px; margin: 0 auto; }
+
+    /* Chat */
+    .chat { background: transparent; border: none; border-radius: 0; display: grid; grid-template-rows: 1fr auto; min-height: 75vh; }
+    .thread { padding: 16px 16px 140px; overflow: auto; position: relative; }
+    .live-preview { display: none; margin: 8px 0 16px; justify-content:center; }
+    .live-preview .frame { width: 100%; max-width: 760px; position: relative; padding: 14px; border-radius: 22px; background: linear-gradient(140deg, rgba(92,48,255,0.95), rgba(173,106,255,0.78) 45%, rgba(40,16,82,0.92)); box-shadow: 0 16px 42px -22px rgba(116,66,255,0.65), 0 26px 72px -38px rgba(12,9,26,0.88); overflow: hidden; }
+    .live-preview .frame::before { content: ""; position: absolute; inset: -40%; background: radial-gradient(circle at 20% 20%, rgba(255,255,255,0.18), transparent 55%), radial-gradient(circle at 80% 10%, rgba(255,255,255,0.12), transparent 45%); opacity: 0.7; filter: blur(18px); pointer-events: none; z-index: 0; }
+    .live-preview .viewer-shell { position: relative; z-index: 1; width: 100%; aspect-ratio: 16 / 9; border-radius: 16px; overflow: hidden; border: none; background: linear-gradient(160deg, rgba(19,10,48,0.85), rgba(32,16,70,0.82)); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.04), 0 10px 24px -20px rgba(5,3,16,0.75); }
+    .live-preview video { display:block; width: 100%; height: 100%; background: transparent; object-fit: cover; pointer-events: none; }
+    .live-preview .open-full { position:absolute; top:18px; right:18px; padding:6px 10px; border-radius:8px; border:1px solid rgba(255,255,255,.2); background:rgba(15,17,23,.72); color:#fff; font-size:12px; cursor:pointer; backdrop-filter: blur(6px); transition: background .15s ease, border-color .15s ease; z-index: 2; }
+    .live-preview .open-full:hover { background:rgba(26,29,40,.85); border-color:rgba(255,255,255,.35); }
+    .live-preview .placeholder { display:flex; align-items:center; justify-content:center; gap:8px; color: var(--muted); padding: 16px; }
+    .live-preview .placeholder button { background: transparent; color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; cursor: pointer; }
+    .empty-state {
+      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      text-align: center; color: var(--muted);
+      font-size: 28px; line-height: 1.25; letter-spacing: .2px;
+      white-space: nowrap; max-width: 100%;
+      opacity: .9; pointer-events: none; user-select: none;
+      z-index: 25;
+    }
+    /* When empty chat, lift the message above the centered input */
+    body.empty-chat .empty-state { top: 40%; }
+    .msg { display:flex; gap:10px; margin: 8px 0; }
+    .msg .role { width: 70px; text-align:right; color: var(--muted); font-size: 12px; padding-top:6px; }
+    .msg .bubble { background: var(--input); border: 1px solid var(--border); border-radius: 14px; padding: 12px 14px; max-width: 720px; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; box-shadow: 0 0 0 1px rgba(255,255,255,0.02) inset; }
+    .msg.agent .bubble {
+      background: transparent;
+      border: none;
+      box-shadow: none;
+      padding: 0;
+      border-radius: 0;
+    }
+    /* Align user messages to the right, agent to the left */
+    .msg.user { justify-content: flex-end; }
+    .msg.user .role { display: none; }
+    .msg.user .bubble { margin-right: 32px; }
+
+    .composer { display:flex; gap:10px; padding: 12px 16px 6px; background: var(--bg); }
+    .composer-fixed {
+      position: fixed;
+      bottom: calc(env(safe-area-inset-bottom) + 24px);
+      left: calc(50% + (var(--sidebar-pad) / 2));
+      transform: translateX(-50%);
+      width: min(900px, calc(100% - var(--sidebar-pad) - 24px));
+      z-index: 20;
+      transition: left .2s ease, width .2s ease, top .2s ease, bottom .2s ease, transform .2s ease;
+    }
+    /* Empty chat: center the composer and make it narrower */
+    body.empty-chat .composer-fixed {
+      top: 50%;
+      bottom: auto;
+      transform: translate(-50%, -50%);
+      width: min(680px, calc(100% - var(--sidebar-pad) - 24px));
+    }
+    .composer input {
+      flex: 1;
+      height: 64px;
+      padding: 16px 18px 16px 26px; /* moved further right */
+      border-radius: 32px;
+      border: 1px solid var(--border);
+      background: var(--input);
+      color: var(--text);
+      font-size: 16px;
+      transition: box-shadow .25s ease, background .2s ease, border-color .2s ease;
+      will-change: box-shadow;
+    }
+    .composer input:focus { outline: none; background: var(--input); }
+    
+    .composer .icon-btn {
+      width: 44px; height: 44px; align-self: center;
+      display: inline-flex; align-items: center; justify-content: center;
+      background: transparent; border: 1px solid transparent; color: var(--text);
+      border-radius: 12px; cursor: pointer; transition: background .12s ease, transform .06s ease;
+    }
+    .composer .icon-btn:hover { background: var(--input-focus); }
+    .composer .icon-btn:active { transform: translateY(1px); }
+    .composer .icon-btn svg { width: 22px; height: 22px; }
+    .composer .icon-btn.active { background: var(--input-focus); color: var(--accent); }
+    /* Input icons inside field */
+    .composer .input-wrap { position: relative; flex: 1; }
+    .composer .input-wrap input {
+      width: 100%; padding-right: 112px;
+      box-shadow: 0 12px 36px -16px rgba(139,92,246,.35), 0 6px 20px -18px rgba(0,0,0,.6);
+    }
+    .composer .input-wrap input:hover {
+      box-shadow: 0 12px 40px -18px rgba(139,92,246,.40), 0 6px 22px -18px rgba(0,0,0,.65);
+    }
+    .composer .input-wrap input:focus {
+      box-shadow: 0 12px 36px -16px rgba(139,92,246,.35), 0 6px 20px -18px rgba(0,0,0,.6);
+      border-color: var(--border);
+    }
+    .composer .input-wrap .input-icon { position: absolute; top: 50%; transform: translateY(calc(-50% - 1px)); align-self: auto; }
+    .composer .input-wrap #btnMic { right: 56px; }
+    .composer .input-wrap #btnVoice { right: 8px; }
+
+    /* Left sidebar: icon-only when closed (56px), full when open (280px) */
+    .sidebar { position: fixed; top: 0; left: 0; width: 56px; height: 100vh; background: #000; border-right: 1px solid rgba(255,255,255,.06); transition: width .2s ease; z-index: 10; padding: 56px 8px 12px; display: flex; flex-direction: column; }
+    body.sidebar-open .sidebar { width: 280px; padding: 56px 8px 12px; }
+    /* no section title when open; items expand in place */
+    .sidebar .logo { position: absolute; top: 12px; left: 8px; }
+    .sidebar .nav { display:flex; flex-direction:column; gap:8px; }
+    .sidebar .nav-bottom { margin-top: auto; margin-bottom: calc(env(safe-area-inset-bottom) + 2px); }
+    .sidebar .nav .item { display:flex; align-items:center; gap:10px; padding:10px 12px; padding-left: 9px; border-radius:10px; border:1px solid transparent; background: transparent; color: var(--text); cursor:pointer; }
+    .sidebar .nav .item:hover { background: transparent; }
+    .sidebar .nav .icon { width: 24px; height: 24px; display:flex; align-items:center; justify-content:center; color: var(--text); flex: 0 0 24px; }
+    .sidebar .nav .icon svg { width: 20px; height: 20px; }
+    .sidebar .nav .label { max-width: 0; opacity: 0; transform: translateX(-4px); transition: opacity .2s ease, transform .2s ease, max-width .2s ease; white-space: nowrap; overflow: hidden; }
+    body.sidebar-open .sidebar .nav .label { max-width: 180px; opacity: 1; transform: translateX(0); }
+    /* Keep icon X-position constant in both states */
+
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-track { background: var(--bg); }
+    ::-webkit-scrollbar-thumb { background: #1f2a44; border-radius: 8px; border: 2px solid var(--bg); }
+    ::-webkit-scrollbar-thumb:hover { background: #2a3a5f; }
+  </style>
+</head>
+<body>
+  <img id="brandLogo" alt="Logo" src="/assets/logo.png" style="position:fixed;top:10px;left:10px;height:40px;width:auto;cursor:pointer;z-index:30;" />
+  <header>
+    <div class="wrap">
+      <div class="brand">
+        <button id="brandButton" class="title" aria-haspopup="true" aria-expanded="false">nerovaAGENT</button>
+        <div id="brandMenu" class="menu" role="menu">
+          <button role="menuitem" data-model="nerovaAGENT 1.0">nerovaAGENT 1.0 ✓</button>
+          <button role="menuitem" data-model="nerovaAGENT Pro">nerovaAGENT Pro</button>
+          <div style="margin:6px 0; border-top:1px solid var(--border);"></div>
+          <div style="padding:6px 6px 2px;">
+            <label style="font-size:12px;opacity:.85; display:flex; align-items:center; gap:8px;">
+              <input id="chkRemote" type="checkbox" /> Use remote worker
+            </label>
+          </div>
+          <div style="padding:4px 6px;">
+            <input id="txtRemoteHttp" type="text" placeholder="Remote HTTP base (https://worker.fly.dev)" style="width:100%; padding:8px; border-radius:8px; border:1px solid var(--border); background: var(--input); color: var(--text);" />
+          </div>
+          <div style="padding:2px 6px 6px;">
+            <input id="txtRemoteWs" type="text" placeholder="Remote WS URL (wss://worker.fly.dev)" style="width:100%; padding:8px; border-radius:8px; border:1px solid var(--border); background: var(--input); color: var(--text);" />
+          </div>
+          <div style="padding:0 6px 6px;">
+            <button id="btnRemoteSave" style="width:100%; text-align:center; padding:8px 10px; border-radius:8px; border:1px solid var(--border); background: var(--panel-2); color:var(--text); cursor:pointer;">Save Backend</button>
+          </div>
+        </div>
+      </div>
+      <div class="hint" id="statusHint" style="margin-left:auto">Ready</div>
+    </div>
+  </header>
+
+  <div class="container">
+    <div class="chat">
+      <div id="thread" class="thread">
+        <div id="emptyState" class="empty-state">Automate web tasks with one prompt</div>
+        <div id="livePreview" class="live-preview">
+          <div class="frame">
+            <div class="viewer-shell">
+              <video id="liveVideo" muted autoplay playsinline></video>
+            </div>
+            <button id="btnOpenFullConsole" class="open-full" type="button">Open full view</button>
+          </div>
+        </div>
+      </div>
+      <div class="composer composer-fixed">
+        <div class="input-wrap">
+          <input id="chatInput" placeholder="Where should we start?" />
+          <button id="btnMic" class="icon-btn input-icon" aria-label="Mic to text" title="Mic to text">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 1a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+            <path d="M19 10a7 7 0 0 1-14 0"/>
+            <path d="M12 19v4"/>
+          </svg>
+          </button>
+        <button id="btnVoice" class="icon-btn input-icon" aria-label="Voice mode" title="Voice mode">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 12a8 8 0 0 1 16 0"/>
+            <rect x="3" y="12" width="4" height="8" rx="2"/>
+            <rect x="17" y="12" width="4" height="8" rx="2"/>
+            <path d="M7 20v-2M17 20v-2"/>
+          </svg>
+        </button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <aside class="sidebar" id="sidebar" hidden>
+    <div class="nav">
+      <div id="btnNewChat" class="item" role="button" tabindex="0">
+        <div class="icon" aria-hidden="true">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+        </div>
+        <div class="label">New Chat</div>
+      </div>
+      <div id="btnPastChats" class="item" role="button" tabindex="0">
+        <div class="icon" aria-hidden="true">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>
+        </div>
+        <div class="label">Past Chats</div>
+      </div>
+    </div>
+    <div class="nav nav-bottom">
+      <div id="btnSettings" class="item" role="button" tabindex="0">
+        <div class="icon" aria-hidden="true">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c0 .66.26 1.3.73 1.77.47.47 1.11.73 1.77.73H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+        </div>
+        <div class="label">Settings</div>
+      </div>
+    </div>
+  </aside>
+
+  <script>
+    // --- Chat helpers ---
+    const threadEl = document.getElementById('thread');
+    // Mark initial state as empty chat (do not start screencast until a run starts)
+    document.addEventListener('DOMContentLoaded', () => {
+      showEmpty();
+    });
+    function addMsg(role, text){
+      const row = document.createElement('div');
+      row.className = 'msg ' + (role === 'agent' ? 'agent' : 'user');
+      const bubble = document.createElement('div'); bubble.className='bubble'; bubble.textContent = text;
+      if (role === 'agent') {
+        // agent: text only, no role label, no bubble background (handled by CSS)
+        row.appendChild(bubble);
+      } else {
+        // user message aligned right, role hidden
+        row.appendChild(bubble);
+      }
+      threadEl.appendChild(row); threadEl.scrollTop = threadEl.scrollHeight;
+    }
+    const emptyStateEl = document.getElementById('emptyState');
+    const setEmptyChat = (isEmpty) => {
+      document.body.classList.toggle('empty-chat', !!isEmpty);
+      if (!emptyStateEl) return;
+      emptyStateEl.style.display = isEmpty ? '' : 'none';
+    };
+    const hideEmpty = () => setEmptyChat(false);
+    const showEmpty = () => setEmptyChat(true);
+
+    // --- Backend wiring: support remote worker (Fly.io / others) ---
+    const bc = (()=>{ try { return new BroadcastChannel('webagent_run'); } catch { return null; } })();
+    const statusHint = document.getElementById('statusHint');
+    let ws = null;               // opened lazily to allow remote endpoints
+    let wsReady = false;
+    const wsQueue = [];
+    const backend = {
+      remoteEnabled: false,
+      baseHttp: location.origin,
+      wsUrl: (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host,
+      machineId: (localStorage.getItem('remoteMachineId') || '').trim(),
+      machineHost: (localStorage.getItem('remoteMachineHost') || '').trim(),
+      viewerUrl: (localStorage.getItem('remoteViewerUrl') || '').trim(),
+      directViewerUrl: (localStorage.getItem('remoteDirectViewerUrl') || '').trim(),
+      directWs: '',
+      bootUrl: (localStorage.getItem('remoteBootUrl') || '').trim(),
+      streamDimensions: null,
+      signaling: null,
+      iceServers: null,
+      iceTtl: null
+    };
+    // Load saved backend config
+    try {
+      backend.remoteEnabled = (localStorage.getItem('remoteEnabled') === 'true');
+      const rh = localStorage.getItem('remoteHttp');
+      const rw = localStorage.getItem('remoteWs');
+      const rm = localStorage.getItem('remoteMachineId');
+      const rhHost = localStorage.getItem('remoteMachineHost');
+      const rv = localStorage.getItem('remoteViewerUrl');
+      const rd = localStorage.getItem('remoteDirectViewerUrl');
+      const rws = localStorage.getItem('remoteDirectWs');
+      const rb = localStorage.getItem('remoteBootUrl');
+      const rs = localStorage.getItem('remoteSignaling');
+      const ri = localStorage.getItem('remoteIceServers');
+      if (rh) backend.baseHttp = rh;
+      if (rw) backend.wsUrl = rw;
+      if (rm) backend.machineId = rm;
+      if (rhHost) backend.machineHost = rhHost;
+      if (rv) backend.viewerUrl = rv;
+      if (rd) backend.directViewerUrl = rd;
+      backend.directWs = '';
+      try { localStorage.removeItem('remoteDirectWs'); } catch {}
+      if (rb) backend.bootUrl = rb;
+      if (rs) {
+        try { backend.signaling = JSON.parse(rs); } catch {}
+      }
+      if (ri) {
+        try { backend.iceServers = JSON.parse(ri); } catch {}
+      }
+    } catch {}
+
+    // Hard requirement: when UI is served from localhost, disallow local backend fallback.
+    // This ensures runs only happen on the configured remote worker.
+    function remoteGuard(){
+      const isLocalHost = /^(localhost|127\.0\.0\.1)$/.test(location.hostname);
+      if (!isLocalHost) return;
+      const httpIsLocal = /^(http:\/\/localhost|http:\/\/127\.0\.0\.1)/.test(String(backend.baseHttp||''));
+      const wsIsLocal = /^(ws:\/\/localhost|ws:\/\/127\.0\.0\.1)/.test(String(backend.wsUrl||''));
+      const misconfigured = !backend.remoteEnabled || httpIsLocal || wsIsLocal;
+      if (misconfigured) {
+        try { statusHint.textContent = 'Remote worker will be provisioned per run'; } catch {}
+      }
+    }
+    remoteGuard();
+
+    let signalWs = null;
+    let signalReady = false;
+    const signalQueue = [];
+    const signalPending = new Map();
+    let signalCounter = 0;
+
+    function resetSignalSocket(){
+      signalReady = false;
+      try { if (signalWs) signalWs.close(); } catch {}
+      signalWs = null;
+      for (const [, reject] of signalPending.values()) {
+        try { reject(new Error('signal_connection_reset')); } catch {}
+      }
+      signalPending.clear();
+    }
+
+    function ensureSignalSocket(){
+      if (!backend.signaling || !backend.signaling.url || !backend.signaling.token) {
+        return null;
+      }
+      if (signalWs && (signalWs.readyState === WebSocket.OPEN || signalWs.readyState === WebSocket.CONNECTING)) {
+        return signalWs;
+      }
+      resetSignalSocket();
+      try {
+        const url = `${backend.signaling.url}${backend.signaling.url.includes('?') ? '&' : '?'}token=${encodeURIComponent(backend.signaling.token)}`;
+        signalWs = new WebSocket(url);
+      } catch (err) {
+        console.error('[signal] ws error', err);
+        return null;
+      }
+      signalWs.addEventListener('open', () => {
+        signalReady = false;
+      });
+      signalWs.addEventListener('message', (ev) => {
+        let msg;
+        try { msg = JSON.parse(ev.data); } catch { return; }
+        if (msg.type === 'ready') {
+          signalReady = true;
+          while (signalQueue.length) {
+            try { signalWs.send(JSON.stringify(signalQueue.shift())); } catch {}
+          }
+          return;
+        }
+        if (msg.type === 'pong') return;
+        if (msg.type === 'response' && msg.id) {
+          const pending = signalPending.get(msg.id);
+          if (pending) {
+            signalPending.delete(msg.id);
+            const { resolve, reject } = pending;
+            if (msg.ok) {
+              resolve(msg);
+            } else {
+              const err = new Error(msg.error || 'signal_error');
+              err.status = msg.status;
+              reject(err);
+            }
+          }
+        }
+      });
+      signalWs.addEventListener('close', () => {
+        signalReady = false;
+        for (const [, reject] of signalPending.values()) {
+          try { reject(new Error('signal_connection_closed')); } catch {}
+        }
+        signalPending.clear();
+      });
+      signalWs.addEventListener('error', (err) => {
+        console.warn('[signal] ws error', err);
+      });
+      return signalWs;
+    }
+
+    function ensureSignalReady(){
+      return new Promise((resolve, reject) => {
+        const ws = ensureSignalSocket();
+        if (!ws) {
+          reject(new Error('signal_not_configured'));
+          return;
+        }
+        if (signalReady && ws.readyState === WebSocket.OPEN) {
+          resolve(ws);
+          return;
+        }
+        const check = () => {
+          if (signalReady && ws.readyState === WebSocket.OPEN) {
+            resolve(ws);
+            return;
+          }
+          if (ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+            reject(new Error('signal_connection_failed'));
+            return;
+          }
+          setTimeout(check, 50);
+        };
+        setTimeout(check, 10);
+      });
+    }
+
+    async function signalRequest(method, path, body, headers){
+      const ws = await ensureSignalReady();
+      const id = `req-${Date.now()}-${++signalCounter}`;
+      const payload = { id, type: 'request', method, path, body, headers };
+      const message = JSON.stringify(payload);
+      return new Promise((resolve, reject) => {
+        signalPending.set(id, { resolve, reject });
+        if (signalReady && ws.readyState === WebSocket.OPEN) {
+          try { ws.send(message); } catch (err) { signalPending.delete(id); reject(err); }
+        } else {
+          signalQueue.push(payload);
+        }
+        setTimeout(() => {
+          if (signalPending.has(id)) {
+            signalPending.delete(id);
+            reject(new Error('signal_timeout'));
+          }
+        }, 10000);
+      });
+    }
+    function backendFetch(path, opts){
+      const aggregator = String(backend.baseHttp || '').replace(/\/$/, '');
+      const directHttp = backend.machineHost ? String(backend.machineHost).replace(/\/$/, '') : '';
+      const altFromWs = backend.directWs ? backend.directWs.replace(/^wss:\/\//, 'https://').replace(/^ws:\/\//, 'http://').replace(/\/$/, '') : '';
+      const base = aggregator || directHttp || altFromWs;
+      const p = String(path || '');
+      const hasQuery = p.includes('?');
+      const useFlyHeader = (!!aggregator && base === aggregator && backend.machineId);
+      const machineParam = useFlyHeader ? `${hasQuery ? '&' : '?'}fly_machine=${backend.machineId}` : '';
+      const url = base + p + machineParam;
+      const headers = new Headers((opts && opts.headers) || {});
+      if (useFlyHeader) headers.set('Fly-Machine', backend.machineId);
+      const init = opts ? { ...opts } : {};
+      init.headers = headers;
+      try { console.debug('[ui backendFetch]', { path, base, useFlyHeader }); } catch {}
+      return fetch(url, init);
+    }
+    function wireWsHandlers(sock){
+      // Screencast frame (preferred)
+      try {
+        sock.addEventListener('message', (ev) => {
+          try {
+            const m = JSON.parse(ev.data);
+            if (m && m.type === 'SCREENCAST_FRAME' && m.data) {
+              const imgEl = document.getElementById('liveImage');
+              const box = document.getElementById('livePreview');
+              const ph = document.getElementById('livePlaceholder');
+              hideEmpty();
+              if (imgEl && box) { imgEl.src = m.data; box.style.display = 'flex'; if (ph) ph.style.display = 'none'; }
+            }
+          } catch {}
+        });
+      } catch {}
+      // Legacy screencast field
+      try {
+        sock.addEventListener('message', (ev) => {
+          try {
+            const m = JSON.parse(ev.data);
+            if (!m || !m.type) return;
+            if (m.type === 'SCREENCAST_FRAME' && typeof m.dataUrl === 'string') {
+              const imgEl = document.getElementById('liveImage');
+              const box = document.getElementById('livePreview');
+              const ph = document.getElementById('livePlaceholder');
+              if (!imgEl || !box) return;
+              hideEmpty();
+              imgEl.src = m.dataUrl; box.style.display = 'flex'; if (ph) ph.style.display = 'none';
+            }
+          } catch {}
+        });
+      } catch {}
+    }
+    function computeWsUrl(){
+      if (backend.wsUrl) {
+        const hasQuery = backend.wsUrl.includes('?');
+        const param = backend.machineId ? `${hasQuery ? '&' : '?'}fly_machine=${encodeURIComponent(backend.machineId)}` : '';
+        return `${backend.wsUrl}${param}`;
+      }
+      if (backend.directWs) {
+        return backend.directWs;
+      }
+      if (backend.machineHost) {
+        return backend.machineHost.replace(/^https:\/\//, 'wss://').replace(/^http:\/\//, 'ws://');
+      }
+      const fallback = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host;
+      return backend.machineId ? `${fallback}?fly_machine=${encodeURIComponent(backend.machineId)}` : fallback;
+    }
+
+    function openWS(){
+      try { if (ws) { try { ws.close(); } catch {} } } catch {}
+      wsReady = false;
+      const target = computeWsUrl();
+      try { console.debug('[ui ws] connect', target); } catch {}
+      ws = new WebSocket(target);
+      wireWsHandlers(ws);
+      ws.addEventListener('open', () => {
+        wsReady = true;
+        try { while (wsQueue.length) { ws.send(JSON.stringify(wsQueue.shift())); } } catch {}
+      });
+      ws.addEventListener('close', () => { wsReady = false; });
+      ws.addEventListener('error', () => { wsReady = false; });
+    }
+    function ensureWS(){ if (!ws || ws.readyState > 1) openWS(); }
+    function sendWS(obj){ try { if (!ws || !wsReady) { ensureWS(); wsQueue.push(obj); return; } ws.send(JSON.stringify(obj)); } catch {} }
+
+    function fullConsoleUrl(){
+      try {
+        const baseSource = backend.baseHttp
+          ? String(backend.baseHttp)
+          : (backend.machineHost
+              ? String(backend.machineHost)
+              : (backend.directWs
+                  ? backend.directWs.replace(/^wss:\/\//, 'https://').replace(/^ws:\/\//, 'http://')
+                  : String(location.origin)));
+        const base = String(baseSource || location.origin).replace(/\/$/, '');
+        const params = new URLSearchParams({ autoconnect: '1', mode: 'viewer' });
+        if (backend.machineId) params.set('fly_machine', backend.machineId);
+        if (backend.signaling && backend.signaling.url) params.set('signal_url', backend.signaling.url);
+        if (backend.signaling && backend.signaling.token) params.set('signal_token', backend.signaling.token);
+        if (backend.iceServers) {
+          try { params.set('ice', JSON.stringify(backend.iceServers)); } catch {}
+        }
+        return `${base}/webrtc?${params.toString()}`;
+      } catch { return '/webrtc?autoconnect=1&mode=viewer'; }
+    }
+    const previewVideoEl = document.getElementById('liveVideo');
+    let previewPc = null;
+    let previewConnectPromise = null;
+    let previewRetryTimer = null;
+    let previewReady = false;
+    const previewReadyWaiters = [];
+
+    function setPreviewReady(flag) {
+      previewReady = flag;
+      if (!flag) return;
+      while (previewReadyWaiters.length) {
+        const waiter = previewReadyWaiters.shift();
+        try { if (waiter?.timer) clearTimeout(waiter.timer); } catch {}
+        try { waiter?.resolve(true); } catch {}
+      }
+    }
+
+    function resetPreviewReady() {
+      previewReady = false;
+    }
+
+    function waitForPreviewReady(timeoutMs = 10000) {
+      if (previewReady) return Promise.resolve(true);
+      return new Promise((resolve) => {
+        const waiter = { resolve };
+        if (timeoutMs > 0) {
+          waiter.timer = setTimeout(() => {
+            const idx = previewReadyWaiters.indexOf(waiter);
+            if (idx >= 0) previewReadyWaiters.splice(idx, 1);
+            resolve(false);
+          }, timeoutMs);
+        }
+        previewReadyWaiters.push(waiter);
+      });
+    }
+
+
+    function teardownPreview(){
+      try {
+        if (previewPc) {
+          try { previewPc.close(); } catch {}
+        }
+      } catch {}
+      previewPc = null;
+      try { if (previewVideoEl) previewVideoEl.srcObject = null; } catch {}
+      try { if (previewRetryTimer) { clearTimeout(previewRetryTimer); previewRetryTimer = null; } } catch {}
+      resetPreviewReady();
+    }
+
+    async function fetchIceConfig(){
+      if (backend.iceServers && Array.isArray(backend.iceServers) && backend.iceServers.length) {
+        return { iceServers: backend.iceServers };
+      }
+      if (backend.signaling) {
+        try {
+          const resp = await signalRequest('GET', '/webrtc/config');
+          const json = resp && resp.body ? resp.body : null;
+          if (json && Array.isArray(json.iceServers)) {
+            backend.iceServers = json.iceServers;
+            return { iceServers: json.iceServers };
+          }
+        } catch (e) {
+          console.warn('[preview] signal ice error', e && e.message || e);
+        }
+      }
+      try {
+        const res = await backendFetch('/webrtc/config');
+        if (!res.ok) throw new Error('config_http_' + res.status);
+        const json = await res.json();
+        if (json && Array.isArray(json.iceServers)) {
+          backend.iceServers = json.iceServers;
+          return { iceServers: json.iceServers };
+        }
+      } catch (e) {
+        console.warn('[preview] ice config fallback', e && e.message || e);
+      }
+      return { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+    }
+
+    function waitForIceComplete(pc, timeoutMs = 2500){
+      if (!pc) return Promise.resolve();
+      if (pc.iceGatheringState === 'complete') return Promise.resolve();
+      return new Promise((resolve) => {
+        const done = () => {
+          try { pc.removeEventListener('icegatheringstatechange', check); } catch {}
+          clearTimeout(timer);
+          resolve();
+        };
+        const check = () => {
+          if (pc.iceGatheringState === 'complete') done();
+        };
+        const timer = setTimeout(done, timeoutMs);
+        pc.addEventListener('icegatheringstatechange', check);
+      });
+    }
+
+    async function ensurePreviewStream(){
+      if (!previewVideoEl) return;
+      if (previewPc && previewPc.connectionState && previewPc.connectionState !== 'failed' && previewPc.connectionState !== 'closed' && previewPc.connectionState !== 'disconnected') {
+        return previewPc;
+      }
+      if (previewConnectPromise) return previewConnectPromise;
+      previewConnectPromise = (async () => {
+        const iceConfig = await fetchIceConfig();
+        const pc = new RTCPeerConnection(iceConfig);
+      previewPc = pc;
+      try { pc.addTransceiver('video', { direction: 'recvonly' }); } catch {}
+      pc.addEventListener('track', (event) => {
+        try {
+          const stream = (event.streams && event.streams[0]) || null;
+          if (stream && previewVideoEl) previewVideoEl.srcObject = stream;
+          if (stream) setPreviewReady(true);
+          console.info('[preview] received track on stream', stream ? 'ok' : 'null');
+        } catch {}
+      });
+      pc.addEventListener('connectionstatechange', () => {
+        const state = pc.connectionState;
+        if (state === 'failed' || state === 'disconnected' || state === 'closed') {
+          console.warn('[preview] connection state', state);
+          if (previewPc === pc) {
+            resetPreviewReady();
+            try { if (previewVideoEl) previewVideoEl.srcObject = null; } catch {}
+            if (state !== 'closed') {
+              setTimeout(() => {
+                if (previewPc === pc) {
+                    previewPc = null;
+                    ensurePreviewStream().catch(()=>{});
+                  }
+                }, 1500);
+              }
+            }
+          }
+        });
+
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      await waitForIceComplete(pc, 3000);
+      let data = null;
+      if (backend.signaling) {
+        try {
+          const resp = await signalRequest('POST', '/webrtc/offer', { offer: pc.localDescription });
+          data = resp && resp.body ? resp.body : null;
+        } catch (err) {
+          console.warn('[preview] signal offer error', err && err.message || err);
+        }
+      }
+      if (!data) {
+        const res = await backendFetch('/webrtc/offer', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ offer: pc.localDescription })
+        });
+        if (!res.ok) throw new Error('offer_http_' + res.status);
+        data = await res.json();
+      }
+      if (!data || !data.answer || !data.answer.sdp) throw new Error('bad_answer');
+      await pc.setRemoteDescription(data.answer);
+      console.info('[preview] remote description set');
+      return pc;
+    })().catch((err) => {
+      console.error('[preview] stream error', err);
+      teardownPreview();
+      throw err;
+      }).finally(() => {
+        previewConnectPromise = null;
+      });
+      return previewConnectPromise;
+    }
+
+    function schedulePreviewRetry(delayMs = 0) {
+      try { if (previewRetryTimer) clearTimeout(previewRetryTimer); } catch {}
+      previewRetryTimer = setTimeout(async () => {
+        try {
+          await ensurePreviewStream();
+          previewRetryTimer = null;
+        } catch (err) {
+          console.warn('[preview] retry failed', err && err.message ? err.message : err);
+          schedulePreviewRetry(Math.min(delayMs ? delayMs * 2 : 600, 6000));
+        }
+      }, Math.max(0, delayMs));
+    }
+
+    function showConsole(){
+      try {
+        hideEmpty();
+        const box = document.getElementById('livePreview');
+        if (box) box.style.display = 'flex';
+      } catch {}
+      schedulePreviewRetry(0);
+    }
+
+    let currentMachineId = null;
+    let machineProvisioning = null;
+    async function provisionRemoteWorker(goalText = '') {
+      if (machineProvisioning) {
+        return machineProvisioning;
+      }
+      machineProvisioning = (async () => {
+        try {
+          teardownPreview();
+        } catch {}
+        const body = { prompt: goalText, runId: `run-${Date.now().toString(36)}` };
+        let response;
+        try {
+          response = await fetch('/machines/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        } catch (e) {
+          throw new Error(`Failed to contact /machines/start (${e?.message || e})`);
+        }
+        let payload;
+        try { payload = await response.json(); } catch { payload = null; }
+        if (!response.ok || !payload || !payload.ok) {
+          const err = payload && payload.error ? payload.error : `HTTP ${response.status}`;
+          throw new Error(`Machine start error: ${err}`);
+        }
+        const {
+          httpBase,
+          wsBase,
+          machineId,
+          machineHost,
+          viewerUrl,
+          directViewerUrl,
+          bootUrl,
+          streamDimensions,
+          signaling,
+          ice
+        } = payload;
+        if (!httpBase || !wsBase || !machineId) {
+          throw new Error('Machine start did not return connection info');
+        }
+        currentMachineId = machineId;
+        backend.remoteEnabled = true;
+        backend.baseHttp = httpBase.replace(/\/$/, '');
+        backend.wsUrl = wsBase;
+        backend.machineId = machineId;
+        backend.machineHost = machineHost || '';
+        backend.viewerUrl = viewerUrl || '';
+        backend.directViewerUrl = directViewerUrl || '';
+        backend.directWs = '';
+        backend.bootUrl = bootUrl || '';
+        backend.streamDimensions = streamDimensions || null;
+        backend.signaling = signaling || null;
+        backend.iceServers = (ice && ice.iceServers) || null;
+        backend.iceTtl = ice && ice.ttl;
+        resetSignalSocket();
+        try {
+          localStorage.setItem('remoteEnabled', 'true');
+          localStorage.setItem('remoteHttp', backend.baseHttp);
+          localStorage.setItem('remoteWs', backend.wsUrl);
+          localStorage.setItem('remoteMachineId', backend.machineId);
+          if (backend.machineHost) localStorage.setItem('remoteMachineHost', backend.machineHost);
+          if (backend.viewerUrl) localStorage.setItem('remoteViewerUrl', backend.viewerUrl);
+          if (backend.directViewerUrl) localStorage.setItem('remoteDirectViewerUrl', backend.directViewerUrl);
+          localStorage.removeItem('remoteDirectWs');
+          if (backend.bootUrl) localStorage.setItem('remoteBootUrl', backend.bootUrl);
+          if (backend.signaling) localStorage.setItem('remoteSignaling', JSON.stringify(backend.signaling));
+          if (backend.iceServers) localStorage.setItem('remoteIceServers', JSON.stringify(backend.iceServers));
+        } catch {}
+        try {
+          bc && bc.postMessage({
+            type: 'REMOTE_BACKEND',
+            http: backend.baseHttp,
+            ws: backend.wsUrl,
+            machineId,
+            machineHost: backend.machineHost,
+            directWs: backend.directWs || '',
+            signaling: backend.signaling || null,
+            ice: backend.iceServers || null
+          });
+        } catch {}
+        try { openWS(); } catch {}
+        try { statusHint.textContent = `Worker ready (${machineId.slice(0, 8)})`; } catch {}
+        return payload;
+      })().finally(() => {
+        machineProvisioning = null;
+      });
+      return machineProvisioning;
+    }
+
+    const openFullBtn = document.getElementById('btnOpenFullConsole');
+    if (openFullBtn) {
+      openFullBtn.addEventListener('click', () => {
+        const url = fullConsoleUrl();
+        const features = 'noopener,noreferrer,width=1320,height=780';
+        window.open(url, '_blank', features);
+      });
+    }
+
+    const sidebarBtn = document.getElementById('btnToggleSidebar');
+    const sidebar = document.getElementById('sidebar');
+    const brandBtn = document.getElementById('brandButton');
+    const brandMenu = document.getElementById('brandMenu');
+    const brandLogo = document.getElementById('brandLogo');
+    let brandModel = 'nerovaAGENT 1.0';
+
+    let running = false;
+    let paused = false;
+    let uiPaused = false; // UI-level pause to route context to /noplanner
+    let loopTimer = null;
+    const inflightFetchControllers = new Set();
+    let uiCompleteHistory = [];
+
+    // Context session
+    let contextActive = false;
+    let contextPrompt = '';
+    let contextStep = 0;
+    const contextMaxSteps = 10;
+
+    // Boot URL on first loop
+    let bootstrapped = false;
+    let basePrompt = '';
+
+    function scheduleNext(ms){
+      try { if (loopTimer) clearTimeout(loopTimer); } catch {}
+      loopTimer = setTimeout(() => { if (!running || paused) return; runLoop(); }, Math.max(0, Number(ms)||0));
+    }
+
+    function setPaused(state){
+      paused = !!state;
+      if (paused) {
+        try { if (loopTimer) clearTimeout(loopTimer); } catch {}
+        loopTimer = null;
+        try { for (const c of inflightFetchControllers) { try { c.abort(); } catch {} } } catch {}
+        try { inflightFetchControllers.clear(); } catch {}
+        addMsg('agent', 'Paused. Add context and send to continue.');
+      }
+    }
+
+    async function getCurrentUrl(){
+      ensureWS();
+      return await new Promise(resolve => {
+        const handler = (ev) => { try { const m = JSON.parse(ev.data); if (m && m.type === 'URL') { ws.removeEventListener('message', handler); resolve(m.url || ''); } } catch {} };
+        try { ws.addEventListener('message', handler); } catch {}
+        try { sendWS({ type: 'GET_URL' }); } catch {}
+        setTimeout(() => { try { ws.removeEventListener('message', handler); } catch {} resolve(''); }, 1200);
+      });
+    }
+
+    async function runLoop(){
+      if (!running) return;
+      try {
+        const currentUrl = await getCurrentUrl();
+
+        // One-time URL bootstrap (no screenshot)
+        if (!bootstrapped) {
+          const urlCriticSys = `SYSTEM (URL Bootstrap Critic)
+
+Decide the single best initial URL to open NOW to advance toward the final goal.
+
+Rules:
+- Output ONLY a single JSON object (no prose, no markdown, no code fences).
+- Allowed actions (choose ONE): navigate | proceed | resend
+- If action=navigate: url must be HTTPS, canonical/official page (no shorteners). Remove tracking query unless required.
+- If action=proceed: current page is already correct to start the task.
+- If action=resend: the page appears in transition/blank; the runtime will retry this same prompt with a fresh screenshot.
+- Include a short reason and numeric confidence 0..1.
+- REQUIRED: include top-level complete (array). Use [] if nothing was completed; otherwise include one or more concise strings (e.g., "bootstrap_navigate:https://example.com").`;
+
+          const bodyB = {
+            openaiApiKey: localStorage.getItem('criticOpenaiKey') || localStorage.getItem('retrieverOpenaiKey') || localStorage.getItem('plannerOpenaiKey') || '',
+            model: localStorage.getItem('criticModel') || 'gpt-5',
+            system: urlCriticSys,
+            user: JSON.stringify({ goal: { original_prompt: basePrompt }, context: { current_url: currentUrl || '' } })
+          };
+          if (bodyB.openaiApiKey) {
+            // noop (debug visible in /noplanner)
+            const acB = new AbortController(); inflightFetchControllers.add(acB);
+            let rB;
+            try {
+              rB = await backendFetch('/critic', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(bodyB), signal: acB.signal });
+            } catch (e) {
+              inflightFetchControllers.delete(acB);
+              if (paused) return;
+              throw e;
+            }
+            inflightFetchControllers.delete(acB);
+            const jB = await rB.json(); if (paused) return;
+            const decisionB = jB && (jB.parsed || jB);
+            // noop
+            if (decisionB && decisionB.action === 'navigate' && typeof decisionB.url === 'string' && decisionB.url.trim()) {
+              sendWS({ type: 'FOCUS' });
+              sendWS({ type: 'NAVIGATE', url: decisionB.url.trim() });
+              addMsg('agent', `Navigating to ${decisionB.url.trim()}`);
+              bootstrapped = true;
+              scheduleNext(800);
+              return;
+            }
+            if (decisionB && decisionB.action === 'resend') { scheduleNext(250); return; }
+            bootstrapped = true; // proceed or fallback
+          } else {
+            bootstrapped = true;
+          }
+        }
+
+        // Normal critic turn (screenshot included by backend)
+        const criticSys = `SYSTEM (Screen-first Web Action Critic)
+
+You are a natural-language-to-web action critic. The goal is stated by the user prompt. Make the best single decision NOW, based ONLY on what is visible in the current screenshot, to advance toward the final goal.
+
+Strict rules:
+- Output ONLY a single valid JSON object (no prose, no markdown, no code fences).
+- Allowed actions: accept | click_by_text_role | scroll | back | navigate | resend | stop (choose ONE).
+- Use action="resend" ONLY if the intended/expected candidate is not visible in the screenshot and the page appears to be still loading or an initial blank/transition frame.
+- Prefer deterministic visible signals: text + role.
+- Never return "accept" unless the chosen control is visibly present.
+- For action="scroll" include: scroll { direction: "down" | "up", pages?: 1..3 }.
+- Include a non-empty reason and a numeric confidence 0..1.
+ - Include what has been completed this step under a top-level "complete" array (use [] if none).
+
+Context override (active only when goal.new_context is non-empty):
+- Treat goal.new_context as a temporary subgoal that overrides the original prompt.
+- Include keep: true|false (true = more steps needed to finish the subgoal; false = subgoal finished). Do not return stop while new_context is active.`;
+
+        const userPayload = {
+          goal: { original_prompt: basePrompt, new_context: (contextActive ? contextPrompt : '') },
+          context: { current_url: currentUrl || '', context_active: !!contextActive, context_step: (contextActive ? contextStep : 0) },
+          plan_window: { planned_step: { id: 'Step 2', type: 'click_by_candidates', hints: {}, content: '' }, next_steps: [] },
+          complete_history: completeHistory.slice(-20)
+        };
+        // noop
+
+        const ac = new AbortController(); inflightFetchControllers.add(ac);
+        let r;
+        try {
+          r = await backendFetch('/critic', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ openaiApiKey: localStorage.getItem('criticOpenaiKey') || localStorage.getItem('retrieverOpenaiKey') || localStorage.getItem('plannerOpenaiKey') || '', model: localStorage.getItem('criticModel') || 'gpt-5', system: criticSys, user: JSON.stringify(userPayload) }), signal: ac.signal });
+        } catch (e) {
+          inflightFetchControllers.delete(ac);
+          if (paused) return; throw e;
+        }
+        inflightFetchControllers.delete(ac);
+        const j = await r.json(); if (paused) return;
+        const decision = j && (j.parsed || j);
+        // noop
+
+        // No local history merge; /noplanner keeps the canonical panels
+
+        if (!decision || !decision.action) { scheduleNext(400); return; }
+        if (decision.action === 'resend') { scheduleNext(250); return; }
+
+        // Context keep
+        try {
+          if (contextActive) {
+            const keep = (decision && Object.prototype.hasOwnProperty.call(decision, 'keep')) ? !!decision.keep : null;
+            if (keep === true && contextStep < contextMaxSteps) { contextStep += 1; }
+            else { contextActive = false; contextPrompt = ''; contextStep = 0; }
+          }
+        } catch {}
+
+        if (decision.action === 'navigate' && decision.url) {
+          addMsg('agent', `Navigate → ${decision.url}`);
+          sendWS({ type: 'FOCUS' });
+          sendWS({ type: 'NAVIGATE', url: decision.url });
+          scheduleNext(800);
+          return;
+        }
+        if (decision.action === 'scroll') {
+          const dir = (decision.scroll && (decision.scroll.direction === 'up' || decision.scroll.direction === 'down')) ? decision.scroll.direction : 'down';
+          addMsg('agent', `Scroll → ${dir}`);
+          sendWS({ type:'FOCUS' });
+          sendWS({ type:'SCROLL_UNIVERSAL', direction: dir });
+          scheduleNext(750);
+          return;
+        }
+        if (decision.action === 'click_by_text_role' && decision.target) {
+          addMsg('agent', `Click target → ${(decision.target && (decision.target.hints && decision.target.hints.text_exact && decision.target.hints.text_exact[0])) || ''}`);
+          // Minimal: rely on earlier exact-match selection in /noplanner
+          // (For brevity here we trigger a fresh Step 2/3 cycle by reusing the normal loop)
+          scheduleNext(200);
+          return;
+        }
+        if (decision.action === 'back') {
+          history.back();
+          addMsg('agent', 'Back');
+          scheduleNext(600);
+          return;
+        }
+        if (decision.action === 'stop') {
+          running = false; setPaused(true);
+          return;
+        }
+        // default: continue
+        scheduleNext(400);
+      } catch (e) {
+        addMsg('agent', 'Error: ' + (e.message||e));
+      }
+    }
+
+    // Send handler
+    const inputEl = document.getElementById('chatInput');
+    const micBtn = document.getElementById('btnMic');
+    let runStartInFlight = false;
+    const sendRun = async () => {
+      const text = (inputEl.value || '').trim();
+      if (!text) return;
+      if (runStartInFlight) {
+        addMsg('agent', 'Run already starting. Please wait…');
+        return;
+      }
+      runStartInFlight = true;
+      try {
+        inputEl.value = '';
+        hideEmpty();
+        addMsg('user', text);
+        // Pause command: mirror /noplanner's Pause button
+        if (text === '*pause') {
+          uiPaused = true;
+          try { bc && bc.postMessage({ type:'PAUSE' }); } catch {}
+          addMsg('agent', 'Paused. Add context and send to continue.');
+          return;
+        }
+        // If UI is paused, treat next message as one-shot context
+        if (uiPaused) {
+          uiPaused = false;
+          try { bc && bc.postMessage({ type:'CONTEXT_CONTINUE', context: text }); } catch {}
+          return;
+        }
+        addMsg('agent', 'Provisioning remote worker…');
+        let workerInfo = null;
+        try {
+          try { statusHint.textContent = 'Provisioning remote worker…'; } catch {}
+          workerInfo = await provisionRemoteWorker(text);
+        } catch (e) {
+          const msg = e?.message || String(e) || 'Unknown error';
+          addMsg('agent', 'Failed to start remote worker: ' + msg);
+          try { statusHint.textContent = 'Worker start failed'; } catch {}
+          return;
+        }
+        try { statusHint.textContent = `Worker ready (${(currentMachineId||'').slice(0,8)})`; } catch {}
+        addMsg('agent', `Remote worker ready: ${(currentMachineId||'').slice(0,8)}`);
+        if (backend.machineHost) addMsg('agent', `Host: ${backend.machineHost}`);
+        basePrompt = text;
+        // Show live remote console (WebRTC)
+        showConsole();
+        const previewReadyNow = await waitForPreviewReady();
+        if (!previewReadyNow) console.warn('[preview] stream not ready before run start');
+        console.info('[agent] starting run', { machineId: currentMachineId, streamReady: previewReadyNow, prompt: text });
+        if (workerInfo && workerInfo.runTriggered === false) {
+          addMsg('agent', 'Remote agent was provisioned but did not start automatically (check server logs).');
+        } else {
+          addMsg('agent', 'Remote agent running on server…');
+        }
+      } finally {
+        runStartInFlight = false;
+      }
+    };
+    // --- Voice to text (Web Speech API) ---
+    (() => {
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SpeechRecognition) {
+        if (micBtn) micBtn.disabled = true;
+        return;
+      }
+      const rec = new SpeechRecognition();
+      rec.lang = navigator.language || 'en-US';
+      rec.continuous = true; // keep session open; we handle pause
+      rec.interimResults = true;
+      let recognizing = false;
+      let committed = '';
+      let silenceTimer = null;
+      let wantContinuous = false; // user toggled mic on
+      let endRequested = false;   // we intentionally called stop()
+      const SILENCE_MS = 2000; // longer pause before auto-send
+
+      function setActive(on) {
+        if (!micBtn) return;
+        micBtn.classList.toggle('active', !!on);
+        micBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+        micBtn.title = on ? 'Listening… click to stop' : 'Mic to text';
+      }
+
+      function resetSilenceTimer(){
+        try { if (silenceTimer) clearTimeout(silenceTimer); } catch {}
+        silenceTimer = setTimeout(() => {
+          endRequested = true;
+          wantContinuous = false;
+          try { rec.stop(); } catch {}
+        }, SILENCE_MS);
+      }
+      rec.onstart = () => { recognizing = true; endRequested = false; setActive(true); resetSilenceTimer(); };
+      rec.onend = () => {
+        recognizing = false; setActive(false);
+        try { if (silenceTimer) clearTimeout(silenceTimer); } catch {}
+        // If we still want to listen (unexpected end), restart without sending
+        if (!endRequested && wantContinuous) {
+          try { rec.start(); } catch {}
+          return;
+        }
+        const textToSend = (inputEl.value || '').trim();
+        if (textToSend) {
+          committed = '';
+          sendRun();
+        }
+        endRequested = false;
+      };
+      rec.onerror = () => {
+        recognizing = false; setActive(false);
+        // Try to recover if still intended to listen
+        if (!endRequested && wantContinuous) {
+          try { rec.start(); } catch {}
+        }
+      };
+      rec.onresult = (e) => {
+        let interim = '';
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          const res = e.results[i];
+          if (res.isFinal) {
+            const frag = (res[0].transcript || '').trim();
+            if (frag) {
+              committed = (committed + ' ' + frag).trim();
+            }
+          } else {
+            interim += res[0].transcript;
+          }
+        }
+        // Update input with committed + interim
+        const combined = (committed + ' ' + interim).replace(/\s+/g,' ').trimStart();
+        inputEl.value = combined;
+        resetSilenceTimer();
+      };
+
+      // Reset timer on any signal of sound/speech
+      rec.onaudiostart = resetSilenceTimer;
+      rec.onsoundstart = resetSilenceTimer;
+      rec.onspeechstart = resetSilenceTimer;
+
+      micBtn?.addEventListener('click', () => {
+        try {
+          if (!recognizing) {
+            committed = inputEl.value || '';
+            wantContinuous = true;
+            endRequested = false;
+            rec.start();
+          } else {
+            // If user clicks while listening, force stop; onend will send
+            wantContinuous = false;
+            endRequested = true;
+            try { rec.stop(); } catch {}
+          }
+        } catch {}
+      });
+
+      // Stop listening when we submit
+      const origSendRun = sendRun;
+      window.sendRun = () => {
+        try {
+          wantContinuous = false;
+          endRequested = true;
+          if (recognizing) { rec.stop(); return; }
+        } catch {}
+        return origSendRun();
+      };
+    })();
+    // On tab close, ensure screencast stops if it was started
+    window.addEventListener('beforeunload', () => {
+      try { sendWS({ type:'SCREENCAST_UNSUB' }); } catch {}
+      try { teardownPreview(); } catch {}
+    });
+
+    // Listen to /noplanner status and reflect
+    try {
+      bc && bc.addEventListener('message', (ev) => {
+        const m = ev.data || {}; if (!m || !m.type) return;
+        if (m.type === 'CRITIC_INPUT') { try { statusHint.textContent = 'Thinking…'; } catch {} }
+        if (m.type === 'CRITIC_OUTPUT') {
+          try { statusHint.textContent = 'Acting…'; } catch {}
+          try { if (m.payload && m.payload.action === 'stop') { uiPaused = true; addMsg('agent', 'Paused (needs context). Add context and send to continue.'); } } catch {}
+        }
+        if (m.type === 'COMPLETE_HISTORY') { try { statusHint.textContent = 'Running'; } catch {} }
+        // If the backend falls back to critic screenshots, still show them
+        if (m.type === 'SCREENSHOT') {
+          try {
+            const imgEl = document.getElementById('liveImage');
+            const box = document.getElementById('livePreview');
+            const ph = document.getElementById('livePlaceholder');
+            if (!imgEl || !box) return;
+            if (m.payload) {
+              hideEmpty(); imgEl.src = m.payload; box.style.display = 'flex'; if (ph) ph.style.display = 'none';
+            } else {
+              box.style.display = 'flex'; if (ph) ph.style.display = '';
+            }
+          } catch {}
+        }
+      });
+    } catch {}
+
+    // Screencast no longer used when live console is embedded.
+
+    // Sidebar toggle
+    try { sidebar.hidden = false; } catch {}
+    if (sidebarBtn) {
+      sidebarBtn.setAttribute('aria-expanded', 'false');
+      sidebarBtn.addEventListener('click', () => {
+        const open = document.body.classList.toggle('sidebar-open');
+        sidebarBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+      });
+    }
+    // Brand menu toggle & selection
+    brandBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const open = !brandMenu.classList.contains('open');
+      brandMenu.classList.toggle('open', open);
+      brandBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    });
+    brandMenu.addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-model]'); if (!btn) return;
+      brandModel = btn.getAttribute('data-model') || brandModel;
+      // Display label rule: 1.0 -> "nerovaAGENT"; Pro -> "nerovaAGENT Pro"
+      const isPro = /Pro$/i.test(brandModel);
+      brandBtn.textContent = isPro ? 'nerovaAGENT Pro' : 'nerovaAGENT';
+      // Update checkmark
+      Array.from(brandMenu.querySelectorAll('button[data-model]')).forEach(b => {
+        const m = b.getAttribute('data-model');
+        b.textContent = m + (m === brandModel ? ' ✓' : '');
+      });
+      brandMenu.classList.remove('open');
+      brandBtn.setAttribute('aria-expanded', 'false');
+    });
+    // Populate backend settings and wire save
+    try {
+      const chk = document.getElementById('chkRemote');
+      const ih = document.getElementById('txtRemoteHttp');
+      const iw = document.getElementById('txtRemoteWs');
+      const btnSave = document.getElementById('btnRemoteSave');
+      if (chk) chk.checked = !!backend.remoteEnabled;
+      if (ih) ih.value = backend.baseHttp || '';
+      if (iw) iw.value = backend.wsUrl || '';
+      btnSave?.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        try {
+      const useRemote = !!(chk && chk.checked);
+      const http = (ih && ih.value && ih.value.trim()) ? ih.value.trim() : '';
+      const wsu = (iw && iw.value && iw.value.trim()) ? iw.value.trim() : '';
+      localStorage.setItem('remoteEnabled', useRemote ? 'true' : 'false');
+      if (http) localStorage.setItem('remoteHttp', http); else localStorage.removeItem('remoteHttp');
+      if (wsu) localStorage.setItem('remoteWs', wsu); else localStorage.removeItem('remoteWs');
+      backend.remoteEnabled = useRemote;
+      if (http) backend.baseHttp = http;
+      if (wsu) backend.wsUrl = wsu;
+      if (!useRemote) {
+        backend.machineId = '';
+        backend.machineHost = '';
+        localStorage.removeItem('remoteMachineId');
+        localStorage.removeItem('remoteMachineHost');
+      }
+      // If switching to remote mid-session, reopen WS
+      if (useRemote) { openWS(); }
+      teardownPreview();
+      const liveBox = document.getElementById('livePreview');
+      if (liveBox && getComputedStyle(liveBox).display !== 'none') {
+            ensurePreviewStream().catch(()=>{});
+          }
+          statusHint.textContent = useRemote ? `Remote: ${backend.baseHttp}` : 'Local backend (disabled)';
+        } catch {}
+        brandMenu.classList.remove('open'); brandBtn.setAttribute('aria-expanded','false');
+      });
+    } catch {}
+    window.addEventListener('click', () => { brandMenu.classList.remove('open'); brandBtn.setAttribute('aria-expanded','false'); });
+    inputEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendRun(); });
+    // Sidebar logo toggle (always visible at top-left)
+    try {
+      brandLogo.setAttribute('aria-label','Toggle sidebar');
+      brandLogo.setAttribute('role','button');
+      brandLogo.tabIndex = 0;
+      const toggle = () => {
+        const open = document.body.classList.toggle('sidebar-open');
+        if (sidebarBtn) sidebarBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+      };
+      brandLogo.addEventListener('click', toggle);
+      brandLogo.addEventListener('keydown', (e)=>{ if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } });
+    } catch {}
+  </script>
+</body>
+</html>
