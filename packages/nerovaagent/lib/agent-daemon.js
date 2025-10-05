@@ -12,7 +12,7 @@ const DATA_DIR = path.join(os.homedir(), '.nerovaagent');
 const DEFAULT_REMOTE_ORIGIN = (process.env.NEROVA_AGENT_HTTP
   || process.env.NEROVA_AGENT_REMOTE_DEFAULT
   || process.env.NEROVA_AGENT_DEFAULT_ORIGIN
-  || 'http://ec2-54-227-111-189.compute-1.amazonaws.com:3333').trim();
+  || 'http://3.92.220.237:3333').trim();
 
 const AGENT_TOKEN = process.env.NEROVA_AGENT_AGENT_TOKEN || process.env.NEROVA_AGENT_TOKEN || '';
 const AGENT_ID = process.env.NEROVA_AGENT_ID || `${os.hostname()}-${process.pid}`;
@@ -37,6 +37,154 @@ let browser = null;
 let agentIdAcknowledged = null;
 
 const pending = new Map();
+
+async function ensureActivePage() {
+  await ensureBrowser();
+  try {
+    const pages = browser.pages();
+    let pick = pages[pages.length - 1];
+    for (let i = pages.length - 1; i >= 0; i -= 1) {
+      try {
+        const url = await pages[i].url();
+        if (url && !/^about:blank/.test(url)) {
+          pick = pages[i];
+          break;
+        }
+      } catch {}
+    }
+    if (pick) page = pick;
+    try { await page.bringToFront?.(); } catch {}
+  } catch {}
+  if (!page) {
+    const pages = browser.pages();
+    page = pages.length ? pages[0] : await browser.newPage();
+  }
+  return page;
+}
+
+async function collectViewportHittables(options = {}) {
+  const { max = 1000, minSize = 8 } = options || {};
+  const activePage = await ensureActivePage();
+  const params = {
+    max: Math.max(10, Math.min(5000, Number(max) || 1000)),
+    minSize: Math.max(4, Math.min(100, Number(minSize) || 8))
+  };
+  const main = await activePage.evaluate(({ max, minSize }) => {
+    const clamp = (val) => Number.isFinite(val) ? Math.round(val) : 0;
+    const collapseWhitespace = (text) => (text || '').toString().replace(/\s+/g, ' ').trim();
+    const isVisible = (el) => {
+      try {
+        const style = getComputedStyle(el);
+        if (style.visibility === 'hidden' || style.display === 'none' || Number(style.opacity || '1') === 0) return false;
+        const rect = el.getBoundingClientRect();
+        if (!rect || rect.width <= 0 || rect.height <= 0) return false;
+        return rect.bottom > 0 && rect.right > 0 && rect.left < (window.innerWidth || 0) && rect.top < (window.innerHeight || 0);
+      } catch { return false; }
+    };
+    const computeRole = (el) => {
+      try {
+        const aria = (el.getAttribute('role') || '').trim().toLowerCase();
+        if (aria) return aria;
+        const tag = (el.tagName || '').toLowerCase();
+        if (tag === 'a') return el.getAttribute('href') ? 'link' : 'generic';
+        if (tag === 'button') return 'button';
+        if (tag === 'input') {
+          const type = (el.getAttribute('type') || '').toLowerCase();
+          if (['button', 'submit', 'reset', 'image'].includes(type)) return 'button';
+          if (type === 'checkbox') return 'checkbox';
+          if (type === 'radio') return 'radio';
+          if (type === 'range') return 'slider';
+          return 'textbox';
+        }
+        if (tag === 'select') return 'combobox';
+        if (tag === 'textarea') return 'textbox';
+        if (tag === 'summary') return 'button';
+        if (tag === 'option') return 'option';
+        return 'generic';
+      } catch { return 'generic'; }
+    };
+    const computeEnabled = (el) => {
+      try {
+        if (el.disabled) return false;
+        const aria = (el.getAttribute('aria-disabled') || '').trim().toLowerCase();
+        if (aria === 'true') return false;
+        return true;
+      } catch { return true; }
+    };
+    const bestSelector = (el) => {
+      try {
+        if (el.id) return `#${el.id}`;
+        const dt = el.getAttribute('data-testid') || el.getAttribute('data-test') || el.getAttribute('data-qa');
+        if (dt) return `[data-testid="${dt.replace(/"/g, '\\"')}"]`;
+        const aria = el.getAttribute('aria-label');
+        if (aria) return `[aria-label="${aria.replace(/"/g, '\\"')}"]`;
+        const parts = [];
+        let cur = el;
+        for (let depth = 0; depth < 3 && cur; depth += 1) {
+          const tag = (cur.tagName || 'div').toLowerCase();
+          const parent = cur.parentElement;
+          if (!parent) {
+            parts.unshift(tag);
+            break;
+          }
+          const siblings = Array.from(parent.children).filter((c) => c.tagName === cur.tagName);
+          const idx = siblings.indexOf(cur) + 1;
+          parts.unshift(`${tag}:nth-of-type(${idx})`);
+          cur = parent;
+        }
+        return parts.join('>') || (el.tagName || '').toLowerCase();
+      } catch {
+        return (el.tagName || '').toLowerCase();
+      }
+    };
+    const items = [];
+    const nodes = Array.from(document.querySelectorAll('*'));
+    for (const el of nodes) {
+      try {
+        if (!isVisible(el)) continue;
+        const rect = el.getBoundingClientRect();
+        if (rect.width < minSize && rect.height < minSize) continue;
+        const center = [clamp(rect.left + rect.width / 2), clamp(rect.top + rect.height / 2)];
+        const viewport = {
+          left: rect.left,
+          top: rect.top,
+          right: rect.left + rect.width,
+          bottom: rect.top + rect.height
+        };
+        const inViewport = viewport.right > 0 && viewport.bottom > 0 && viewport.left < (window.innerWidth || 0) && viewport.top < (window.innerHeight || 0);
+        const elAtPoint = document.elementFromPoint(center[0], center[1]);
+        const occluded = elAtPoint && elAtPoint !== el && !el.contains(elAtPoint);
+        const hitState = inViewport ? (occluded ? 'occluded' : 'hittable') : 'offscreen_page';
+        const name = collapseWhitespace((el.getAttribute('aria-label') || el.innerText || el.textContent || '').slice(0, 400));
+        const role = computeRole(el);
+        const enabled = computeEnabled(el);
+        const href = el.tagName && el.tagName.toLowerCase() === 'a' ? el.href || null : null;
+        const anchor = (() => {
+          try {
+            const anc = el.closest('a');
+            return anc && anc.href ? anc.href : null;
+          } catch { return null; }
+        })();
+        items.push({
+          id: items.length ? `${role}-${items.length}` : `${role}-0`,
+          name,
+          role,
+          enabled,
+          hit_state: hitState,
+          center,
+          rect: [clamp(rect.left), clamp(rect.top), clamp(rect.width), clamp(rect.height)],
+          selector: bestSelector(el),
+          href,
+          anchor,
+          className: (el.className && el.className.toString && el.className.toString()) || ''
+        });
+      } catch {}
+      if (items.length >= max) break;
+    }
+    return items;
+  }, params);
+  return Array.isArray(main) ? main : [];
+}
 
 const resolveCommand = (id, payload) => {
   const entry = pending.get(id);
@@ -110,6 +258,11 @@ async function handleCommand(command, payload = {}) {
       await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => resolve(true))));
       return { ok: true };
     }
+    case 'WAIT_FOR_LOAD': {
+      const { state = 'load', timeout = 5000 } = payload || {};
+      await page.waitForLoadState(state, { timeout });
+      return { ok: true };
+    }
     case 'EVALUATE': {
       const { expression, arg } = payload;
       const fn = Function(`return (${expression});`)();
@@ -131,6 +284,13 @@ async function handleCommand(command, payload = {}) {
         throw new Error('Invalid viewport size');
       }
       await page.setViewportSize({ width: size.width, height: size.height });
+      return { ok: true };
+    }
+    case 'CLICK_VIEWPORT': {
+      const { vx, vy, button = 'left', clickCount = 1 } = payload || {};
+      if (!Number.isFinite(vx) || !Number.isFinite(vy)) throw new Error('invalid_coordinates');
+      await ensureActivePage();
+      await page.mouse.click(Math.round(vx), Math.round(vy), { button, clickCount });
       return { ok: true };
     }
     case 'MOUSE_MOVE': {
@@ -160,6 +320,47 @@ async function handleCommand(command, payload = {}) {
       }, { dx, dy });
       return { ok: true };
     }
+    case 'SCROLL_UNIVERSAL': {
+      const { direction = 'down' } = payload || {};
+      const dir = direction === 'up' ? -1 : 1;
+      const activePage = await ensureActivePage();
+      const vp = activePage.viewportSize() || { width: 1280, height: 800 };
+      const deltaPx = dir * Math.max(200, Math.round((vp.height || 800) * 0.8));
+      await activePage.evaluate((delta) => {
+        const clamp = (val, min, max) => Math.max(min, Math.min(max, val));
+        const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+        const run = async () => {
+          const se = document.scrollingElement || document.documentElement || document.body;
+          if (se) {
+            const before = se.scrollTop || 0;
+            const maxTop = Math.max(0, (se.scrollHeight || 0) - (se.clientHeight || 0));
+            const next = clamp(before + delta, 0, maxTop);
+            if (next !== before) se.scrollTop = next;
+            await wait(40);
+          }
+          const nodes = Array.from(document.querySelectorAll('*'));
+          for (const el of nodes) {
+            try {
+              const style = getComputedStyle(el);
+              const oy = (style.overflowY || '').toLowerCase();
+              const ox = (style.overflowX || '').toLowerCase();
+              const scrollable = (oy === 'auto' || oy === 'scroll' || oy === 'overlay') || (ox === 'auto' || ox === 'scroll' || ox === 'overlay');
+              if (!scrollable) continue;
+              if (el.scrollHeight <= el.clientHeight && el.scrollWidth <= el.clientWidth) continue;
+              const rect = el.getBoundingClientRect();
+              if (rect.height <= 60) continue;
+              if (rect.bottom < 30 || rect.top > (window.innerHeight || 0) - 30) continue;
+              const before = el.scrollTop || 0;
+              const maxTop = Math.max(0, (el.scrollHeight || 0) - (el.clientHeight || 0));
+              const next = clamp(before + delta, 0, maxTop);
+              if (next !== before) { el.scrollTop = next; await wait(12); }
+            } catch {}
+          }
+        };
+        return run();
+      }, deltaPx);
+      return { ok: true };
+    }
     case 'ADD_INIT_SCRIPT': {
       const { script = '', fn = '', path: scriptPath = '' } = payload || {};
       if (scriptPath) {
@@ -179,7 +380,49 @@ async function handleCommand(command, payload = {}) {
       }
       return { ok: true };
     }
+    case 'CLEAR_ACTIVE_INPUT': {
+      const { token = null } = payload || {};
+      const cleared = await page.evaluate(() => {
+        try {
+          const el = document.activeElement;
+          if (!el) return false;
+          if ('value' in el) {
+            const prev = el.value;
+            el.value = '';
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            return !!prev;
+          }
+          if (el.isContentEditable) {
+            el.textContent = '';
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            return true;
+          }
+          return false;
+        } catch {
+          return false;
+        }
+      });
+      return { ok: true, cleared, token };
+    }
+    case 'PRESS_ENTER': {
+      await page.keyboard.press('Enter');
+      return { ok: true };
+    }
+    case 'GET_HITTABLES_VIEWPORT': {
+      const { options = {} } = payload || {};
+      const elements = await collectViewportHittables(options);
+      return { ok: true, elements };
+    }
+    case 'GO_BACK': {
+      const response = await page.goBack({ waitUntil: 'load' }).catch(() => null);
+      return { ok: true, navigated: !!response };
+    }
     case 'URL': {
+      const current = await page.url();
+      return { ok: true, url: current };
+    }
+    case 'GET_URL': {
       const current = await page.url();
       return { ok: true, url: current };
     }
@@ -190,12 +433,9 @@ async function handleCommand(command, payload = {}) {
 
 async function main() {
   console.log('[agent] starting, id', AGENT_ID, 'origin', DEFAULT_REMOTE_ORIGIN);
-  const ws = new WebSocket(WS_URL, {
-    headers: {
-      'X-Nerova-Agent': AGENT_ID,
-      Authorization: AGENT_TOKEN ? `Bearer ${AGENT_TOKEN}` : undefined
-    }
-  });
+  const headers = { 'X-Nerova-Agent': AGENT_ID };
+  if (AGENT_TOKEN) headers.Authorization = `Bearer ${AGENT_TOKEN}`;
+  const ws = new WebSocket(WS_URL, { headers });
 
   ws.on('open', () => {
     console.log('[agent] connected to coordinator');

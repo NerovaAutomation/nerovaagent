@@ -107,3 +107,8 @@ export async function stopAgentDaemon() {
     return false;
   }
 }
+
+export async function isAgentDaemonRunning() {
+  const pid = await readPid();
+  return isRunning(pid);
+}

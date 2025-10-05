@@ -14,7 +14,7 @@ const PID_FILE = path.join(RUN_DIR, 'nerovaagent.pid');
 // Override by setting NEROVA_AGENT_HTTP or NEROVA_AGENT_REMOTE_DEFAULT when developing locally.
 const DEFAULT_REMOTE_ORIGIN = (process.env.NEROVA_AGENT_REMOTE_DEFAULT
   || process.env.NEROVA_AGENT_DEFAULT_ORIGIN
-  || 'http://ec2-54-227-111-189.compute-1.amazonaws.com:3333').trim();
+  || 'http://3.92.220.237:3333').trim();
 const MACHINE_HEADER = process.env.FLY_MACHINE_ID ? { 'Fly-Machine': process.env.FLY_MACHINE_ID } : null;
 
 export function resolveConfig(overrides = {}) {
@@ -37,7 +37,8 @@ export function resolveConfig(overrides = {}) {
   const isLocal = overrides.hasOwnProperty('isLocal')
     ? !!overrides.isLocal
     : ['127.0.0.1', 'localhost', '::1'].includes(baseUrl.hostname);
-  return { port, origin, url: baseUrl, isLocal };
+  const isRemote = !isLocal;
+  return { port, origin, url: baseUrl, isLocal, isRemote };
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -101,9 +102,11 @@ export function createClient(overrides = {}) {
   const config = resolveConfig(overrides);
   return {
     config,
-    ensureServer: () => ensureServer(config),
+    ensureServer: () => (config.isLocal ? ensureServer(config) : config),
     async request(pathname, { method = 'GET', body } = {}) {
-      await ensureServer(config);
+      if (config.isLocal) {
+        await ensureServer(config);
+      }
       const url = new URL(pathname, config.origin);
       const headers = { 'Content-Type': 'application/json' };
       if (MACHINE_HEADER) Object.assign(headers, MACHINE_HEADER);

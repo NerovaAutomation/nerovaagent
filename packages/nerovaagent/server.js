@@ -1,6 +1,10 @@
 import express from 'express';
 import { WebSocketServer } from 'ws';
 import crypto from 'crypto';
+import { attachAgent, listAgents, agentCount } from './lib/agents.js';
+import { command as sendAgentCommand, ensureAgentInitialized } from './lib/remote-driver.js';
+import { runAgentWorkflow } from './workflow/agent-workflow.js';
+import { callCritic } from './lib/llm.js';
 // Optional: http-proxy (used only for /console); tolerate absence
 let createProxyServer = null;
 try {
@@ -216,7 +220,8 @@ app.get('/healthz', async (_req, res) => {
         id: process.env.FLY_MACHINE_ID || null,
         app: process.env.FLY_APP_NAME || null,
         region: process.env.FLY_REGION || null
-      }
+      },
+      agents: listAgents()
     };
     res.json(state);
   } catch (err) {
@@ -432,8 +437,18 @@ app.post('/run/start', async (req, res) => {
   try {
     const body = req.body || {};
     const prompt = typeof body.prompt === 'string' ? body.prompt : '';
-    await startRemoteAgent(prompt);
-    res.json({ ok: true });
+    const contextNotes = typeof body.contextNotes === 'string' ? body.contextNotes : '';
+    const criticKey = typeof body.criticKey === 'string' ? body.criticKey : null;
+    const assistantKey = typeof body.assistantKey === 'string' ? body.assistantKey : null;
+    const assistantId = typeof body.assistantId === 'string' ? body.assistantId : (process.env.ASSISTANT_ID2 || null);
+    const run = await startRemoteAgent({
+      prompt,
+      contextNotes,
+      criticKey,
+      assistantKey,
+      assistantId
+    });
+    res.json(run);
   } catch (err) {
     console.error('[run] start error', err?.message || err);
     res.status(500).json({ ok: false, error: err?.message || String(err) });
@@ -444,6 +459,16 @@ app.post('/run/start', async (req, res) => {
 app.post('/runtime/playwright/launch', async (req, res) => {
   if (!enforceMachineAffinity(req, res)) return;
   try {
+    if (agentCount() > 0) {
+      const agent = await ensureAgentInitialized();
+      let viewport = null;
+      try {
+        const vp = await sendAgentCommand('VIEWPORT', null, { agent, timeout: 5000 });
+        viewport = vp && vp.viewport ? vp.viewport : vp || null;
+      } catch {}
+      res.json({ ok: true, status: 'ready', viewport });
+      return;
+    }
     await ensureBrowser();
     let viewport = null;
     if (page) {
@@ -2413,41 +2438,38 @@ async function getControlPage() {
   }
 }
 
-async function startRemoteAgent(promptText) {
+async function startRemoteAgent({
+  prompt: promptText,
+  contextNotes = '',
+  criticKey = null,
+  assistantKey = null,
+  assistantId = process.env.ASSISTANT_ID2 || null
+} = {}) {
   const prompt = String(promptText || '').trim();
   if (!prompt) throw new Error('prompt_required');
-  const page = await getControlPage();
-  try { log('[agent] launching server-side run', { prompt: prompt.slice(0, 160) }); } catch {}
-  const config = {
-    baseHttp: `http://127.0.0.1:${PORT}`,
-    wsUrl: `ws://127.0.0.1:${PORT}`,
-    machineId: process.env.FLY_MACHINE_ID || '',
-    machineHost: '',
-    directWs: ''
-  };
-  const secrets = {
-    criticKey: process.env.CRITIC_OPENAI_KEY || process.env.OPENAI_API_KEY || '',
-    retrieverKey: process.env.RETRIEVER_OPENAI_KEY || process.env.OPENAI_API_KEY || '',
-    plannerKey: process.env.PLANNER_OPENAI_KEY || process.env.OPENAI_API_KEY || '',
-    nanoKey: process.env.NANO_OPENAI_KEY || process.env.OPENAI_API_KEY || '',
-    assistantId2: process.env.ASSISTANT_ID2 || '',
-    criticModel: process.env.CRITIC_MODEL || null,
-    plannerModel: process.env.PLANNER_MODEL || null,
-    retrieverModel: process.env.RETRIEVER_MODEL || null
-  };
-  await page.evaluate(({ config, secrets, prompt }) => {
-    if (!window.__NEROVA_AGENT) {
-      console.error('NEROVA agent bridge not ready');
-      return;
-    }
-    try { window.__NEROVA_AGENT.setSecrets && window.__NEROVA_AGENT.setSecrets(secrets || {}); } catch (err) { console.error('applySecrets failed', err); }
-    try { window.__NEROVA_AGENT.configureBackend && window.__NEROVA_AGENT.configureBackend(config || {}); } catch (err) { console.error('configureBackend failed', err); }
-    try { window.__NEROVA_AGENT.start && window.__NEROVA_AGENT.start(prompt || ''); } catch (err) { console.error('start run failed', err); }
-  }, { config, secrets, prompt });
-  controlRunActive = true;
+  try { log('[agent] launching run', { prompt: prompt.slice(0, 160) }); } catch {}
+  const result = await runAgentWorkflow({
+    prompt,
+    contextNotes,
+    openaiApiKey: criticKey,
+    assistantOpenAiKey: assistantKey,
+    assistantId
+  });
+  return result;
 }
 
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, req) => {
+  let pathname = '/';
+  try {
+    const host = req?.headers?.host || '127.0.0.1';
+    pathname = new URL(req?.url || '/', `http://${host}`).pathname;
+  } catch {
+    pathname = (req && req.url) || '/';
+  }
+  if (pathname.startsWith('/agent/connect')) {
+    attachAgent(ws, req);
+    return;
+  }
   ws.on('close', async () => {
     try {
       if (screencast.clients.has(ws)) {
@@ -5681,12 +5703,45 @@ app.post('/nl2web2', async (req, res) => {
 // Step Critic (text-only): call OpenAI chat with system + user JSON payload
 app.post('/critic', async (req, res) => {
   try {
-    const { openaiApiKey, model = 'gpt-5', system, user } = req.body || {};
-    if (!openaiApiKey) return res.status(400).json({ ok: false, error: 'Missing openaiApiKey' });
-    const sys = typeof system === 'string' && system.trim() ? system.trim() : 'You are the Step Critic. Return JSON only.';
-    const usr = typeof user === 'string' && user.trim() ? user.trim() : '{}';
+    const body = req.body || {};
+    const {
+      prompt: bodyPrompt,
+      openaiApiKey,
+      screenshot: providedScreenshot,
+      currentUrl: explicitUrl,
+      contextNotes = '',
+      model
+    } = body;
+
+    const prompt = typeof bodyPrompt === 'string' && bodyPrompt.trim()
+      ? bodyPrompt.trim()
+      : (typeof body?.goal?.original_prompt === 'string' ? body.goal.original_prompt : '');
+
+    const cleanScreenshot = (() => {
+      if (typeof providedScreenshot !== 'string') return null;
+      const trimmed = providedScreenshot.trim();
+      if (!trimmed) return null;
+      if (trimmed.startsWith('data:image')) {
+        const idx = trimmed.indexOf(',');
+        return idx >= 0 ? trimmed.slice(idx + 1) : trimmed;
+      }
+      return trimmed;
+    })();
+
+    if (cleanScreenshot && cleanScreenshot.length > 20) {
+      const result = await callCritic({
+        prompt: prompt || '',
+        screenshot: cleanScreenshot,
+        currentUrl: explicitUrl || body?.context?.current_url || '',
+        contextNotes,
+        openaiApiKey,
+        model
+      });
+      res.json(result);
+      return;
+    }
+
     await ensureBrowser();
-    // Ensure we screenshot the active page (most recent non-blank) and bring it to front
     try {
       const pages = browser.pages();
       let pick = pages[pages.length - 1];
@@ -5696,7 +5751,6 @@ app.post('/critic', async (req, res) => {
       if (pick) page = pick;
       try { await page.bringToFront(); } catch {}
     } catch {}
-    // Stabilize page before screenshot to avoid blank redirect frames
     try { await page.waitForLoadState('domcontentloaded', { timeout: 3000 }); } catch {}
     try { await page.waitForLoadState('load', { timeout: 2500 }); } catch {}
     try { await page.waitForLoadState('networkidle', { timeout: 2500 }); } catch {}
@@ -5711,34 +5765,17 @@ app.post('/critic', async (req, res) => {
       }, { timeout: 1500 });
     } catch {}
     try { await page.waitForTimeout(200); } catch {}
-    // Attach a fresh screenshot of the current page
     const shotBuf = await page.screenshot({ fullPage: false });
     const shotB64 = shotBuf.toString('base64');
-    const r = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${openaiApiKey}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        model,
-        response_format: { type: 'json_object' },
-        messages: [
-          { role: 'system', content: sys },
-          { role: 'user', content: [
-            { type: 'text', text: usr },
-            { type: 'image_url', image_url: { url: `data:image/png;base64,${shotB64}` } }
-          ] }
-        ]
-      })
+    const result = await callCritic({
+      prompt: prompt || '',
+      screenshot: shotB64,
+      currentUrl: explicitUrl || await page.url().catch(() => '') || '',
+      contextNotes,
+      openaiApiKey,
+      model
     });
-    if (!r.ok) { const t = await r.text(); throw new Error(`OpenAI chat HTTP ${r.status}: ${t}`); }
-    const data = await r.json();
-    const text = data?.choices?.[0]?.message?.content?.trim() || '';
-    let parsed = null; let raw = text;
-    if (raw.startsWith('```')) raw = raw.replace(/```[a-zA-Z]*\n?/g, '').replace(/```/g, '').trim();
-    try { parsed = JSON.parse(raw); } catch {}
-    res.json({ ok: true, raw: text, parsed, screenshot: `data:image/png;base64,${shotB64}` });
+    res.json(result);
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e) });
   }
