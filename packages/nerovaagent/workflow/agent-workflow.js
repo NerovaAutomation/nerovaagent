@@ -1,15 +1,9 @@
+import crypto from 'crypto';
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { ensureAgentInitialized, command as agentCommand, assignRun as markAgentRun } from '../lib/remote-driver.js';
 import { callCritic, callAssistantDecision, defaultAssistantKey } from '../lib/llm.js';
-import {
-  generateRunId,
-  extractCompletes,
-  filterByRadius,
-  pickExactMatch,
-  pickFuzzyMatch
-} from '../lib/decision-helpers.js';
 
 const DEFAULT_SCREENSHOT_TIMEOUT = Number(process.env.AGENT_SCREENSHOT_TIMEOUT_MS || 20000);
 const MAX_STEPS = Number(process.env.AGENT_MAX_STEPS || 10);
@@ -19,6 +13,13 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const APP_ROOT = path.resolve(__dirname, '..', '..');
 const RUN_LOG_DIR = path.join(APP_ROOT, 'logs', 'runs');
+
+function generateRunId() {
+  if (typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
 
 async function captureSnapshot(agent) {
   const urlResult = await agentCommand('URL', null, { agent }).catch(() => null);
@@ -33,6 +34,117 @@ async function captureSnapshot(agent) {
   };
 }
 
+function extractCompletes(decision, store) {
+  if (!decision) return store;
+  const current = Array.isArray(store) ? [...store] : [];
+  if (Array.isArray(decision.complete)) {
+    for (const entry of decision.complete) {
+      const value = String(entry || '').trim();
+      if (!value) continue;
+      const key = value.toLowerCase();
+      if (!current.some((existing) => String(existing || '').toLowerCase() === key)) {
+        current.push(value);
+      }
+    }
+  } else if (typeof decision.complete === 'string') {
+    const value = decision.complete.trim();
+    if (value && !current.some((existing) => String(existing || '').toLowerCase() === value.toLowerCase())) {
+      current.push(value);
+    }
+  }
+  return current;
+}
+
+function normalizeText(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function filterByRadius(elements, center, radius = DEFAULT_CLICK_RADIUS) {
+  if (!center || !Array.isArray(center) || center.length !== 2) return elements;
+  const [cx, cy] = center;
+  const r = Number.isFinite(radius) ? radius : DEFAULT_CLICK_RADIUS;
+  const within = (element) => {
+    try {
+      if (Array.isArray(element.center) && element.center.length === 2) {
+        const d = Math.hypot(element.center[0] - cx, element.center[1] - cy);
+        if (d <= r) return true;
+      }
+      if (Array.isArray(element.rect) && element.rect.length === 4) {
+        const [left, top, width, height] = element.rect;
+        const right = left + (width || 0);
+        const bottom = top + (height || 0);
+        if (cx >= left && cx <= right && cy >= top && cy <= bottom) return true;
+        const dx = cx < left ? left - cx : cx > right ? cx - right : 0;
+        const dy = cy < top ? top - cy : cy > bottom ? cy - bottom : 0;
+        return Math.hypot(dx, dy) <= r;
+      }
+    } catch {}
+    return false;
+  };
+  const filtered = elements.filter(within);
+  if (filtered.length > 0) return filtered;
+  return elements
+    .slice()
+    .sort((a, b) => {
+      const dist = (element) => {
+        try {
+          if (Array.isArray(element.center) && element.center.length === 2) {
+            return Math.hypot(element.center[0] - cx, element.center[1] - cy);
+          }
+          if (Array.isArray(element.rect) && element.rect.length === 4) {
+            const [left, top, width, height] = element.rect;
+            const right = left + (width || 0);
+            const bottom = top + (height || 0);
+            const dx = cx < left ? left - cx : cx > right ? cx - right : 0;
+            const dy = cy < top ? top - cy : cy > bottom ? cy - bottom : 0;
+            return Math.hypot(dx, dy);
+          }
+        } catch {}
+        return Number.POSITIVE_INFINITY;
+      };
+      return dist(a) - dist(b);
+    })
+    .slice(0, 20);
+}
+
+function pickExactMatch(elements, hints, center) {
+  if (!Array.isArray(elements) || elements.length === 0) return null;
+  const exact = new Set(Array.isArray(hints?.text_exact) ? hints.text_exact.map(normalizeText) : []);
+  if (!exact.size) return null;
+  const candidates = filterByRadius(elements, center).filter((element) => exact.has(normalizeText(element.name)));
+  if (!candidates.length) return null;
+  const hittable = candidates.filter((element) => element.hit_state === 'hittable');
+  const pool = hittable.length ? hittable : candidates;
+  if (!center) return pool[0];
+  const [cx, cy] = center;
+  let best = pool[0];
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (const element of pool) {
+    if (Array.isArray(element.center) && element.center.length === 2) {
+      const distance = Math.hypot(element.center[0] - cx, element.center[1] - cy);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = element;
+      }
+    }
+  }
+  return best;
+}
+
+function pickFuzzyMatch(elements, hints, center) {
+  const pool = filterByRadius(elements, center);
+  if (!pool.length) return null;
+  const fuzzyTerms = [];
+  if (Array.isArray(hints?.text_contains)) fuzzyTerms.push(...hints.text_contains);
+  if (typeof hints?.text_partial === 'string') fuzzyTerms.push(hints.text_partial);
+  const normalized = fuzzyTerms.map(normalizeText).filter(Boolean);
+  if (!normalized.length) return pool[0];
+  for (const term of normalized) {
+    const match = pool.find((element) => normalizeText(element.name).includes(term));
+    if (match) return match;
+  }
+  return pool[0];
+}
 
 async function performClickByTextRole(decision, agent, context) {
   const hints = decision?.target?.hints || {};
@@ -180,19 +292,11 @@ export async function runAgentWorkflow({
   contextNotes = '',
   openaiApiKey = null,
   assistantOpenAiKey = null,
-  assistantId = process.env.ASSISTANT_ID2 || null,
-  onEvent = null
+  assistantId = process.env.ASSISTANT_ID2 || null
 } = {}) {
   if (!prompt || !prompt.toString().trim()) {
     throw new Error('prompt_required');
   }
-  const emit = (payload) => {
-    if (typeof onEvent === 'function') {
-      try {
-        onEvent(payload);
-      } catch {}
-    }
-  };
   const agent = await ensureAgentInitialized();
   const runId = generateRunId();
   markAgentRun(agent, runId);
@@ -201,7 +305,6 @@ export async function runAgentWorkflow({
   let iterations = 0;
   let completeHistory = [];
 
-  emit({ type: 'run_started', runId, prompt: prompt.toString(), contextNotes });
   try {
     const timeline = [];
     while (iterations < MAX_STEPS) {
@@ -295,24 +398,6 @@ export async function runAgentWorkflow({
         debug: stepResult?.debug || null
       });
 
-      emit({
-        type: 'iteration',
-        runId,
-        iteration: iterations,
-        critic: {
-          request: {
-            system: critic.system,
-            user: critic.user,
-            url: snapshot.url,
-            contextNotes: contextNotes || ''
-          },
-          response: critic
-        },
-        decision,
-        result: stepResult,
-        assistant
-      });
-
       if (stepResult.next === 'stop') {
         status = status === 'in_progress' ? 'completed' : status;
         break;
@@ -353,7 +438,6 @@ export async function runAgentWorkflow({
         timeline
       };
       await fs.writeFile(logPath, JSON.stringify(logPayload, null, 2), 'utf8');
-      emit({ type: 'run_completed', runId, status, iterations, logPath, summary: runSummary });
     } catch (err) {
       console.warn('[nerovaagent] failed to write run log', err?.message || err);
     }

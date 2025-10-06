@@ -2,7 +2,6 @@
 import { readFileSync } from 'fs';
 import { createClient } from '../lib/runtime.js';
 import { ensureAgentDaemon, isAgentDaemonRunning } from '../lib/agent-manager.js';
-import { runCliWorkflow } from '../lib/cli-workflow.js';
 
 const args = process.argv.slice(2);
 const client = createClient();
@@ -191,28 +190,24 @@ async function handleStart(options) {
     contextNotes = loadFileSafe(options.contextFile);
   }
 
+  const payload = {
+    prompt: prompt.trim(),
+    contextNotes: contextNotes ? contextNotes.trim() : '',
+    criticKey: options.criticKey || process.env.NEROVA_AGENT_CRITIC_KEY || null,
+    assistantKey: options.assistantKey || process.env.NEROVA_AGENT_ASSISTANT_KEY || null,
+    assistantId: options.assistantId || process.env.NEROVA_AGENT_ASSISTANT_ID || null
+  };
+
   await requireAgentDaemon();
 
   try {
-    await client.ensureServer();
-  } catch (err) {
-    console.error('Failed to reach backend runtime:', err?.message || err);
-    process.exit(1);
-  }
-
-  try {
-    const result = await runCliWorkflow({
-      client,
-      prompt: prompt.trim(),
-      contextNotes: contextNotes ? contextNotes.trim() : '',
-      criticKey: options.criticKey || process.env.NEROVA_AGENT_CRITIC_KEY || null,
-      assistantKey: options.assistantKey || process.env.NEROVA_AGENT_ASSISTANT_KEY || null,
-      assistantId: options.assistantId || process.env.NEROVA_AGENT_ASSISTANT_ID || null,
-      log: console
-    });
+    const result = await callRuntime('/run/start', { method: 'POST', body: payload });
     renderRunResult(result);
   } catch (err) {
-    console.error('Failed to execute workflow:', err?.message || err);
+    console.error('Failed to start agent:', err?.message || err);
+    if (err?.data) {
+      console.error('Runtime response:', err.data);
+    }
     process.exit(1);
   }
 }
@@ -247,7 +242,7 @@ function renderRunResult(run) {
     return;
   }
   const status = run.status || (run.ok ? 'completed' : 'unknown');
-  console.log(`[nerovaagent] status=${status} iterations=${run.iterations ?? 'n/a'}`);
+  console.log(`[nerovaagent] status=${status} iterations=${run.iterations ?? 'n/a'} agent=${run.agent?.id ?? 'unknown'}`);
 
   const timeline = Array.isArray(run.timeline) ? run.timeline : [];
   if (!timeline.length) {
@@ -271,9 +266,8 @@ function renderRunResult(run) {
     const result = entry.result || {};
     if (result.next && result.next !== 'continue') {
       console.log(`   result: next=${result.next}${result.reason ? ` reason=${result.reason}` : ''}`);
-    }
-    if (result.action === 'click' && result.target) {
-      console.log(`   clicked: ${(result.target.name || result.target.id || 'candidate')} @ ${JSON.stringify(result.target.center || [])}`);
+    } else if (result.clicked) {
+      console.log(`   clicked: ${result.clicked.name || result.clicked.id || 'candidate'} (state=${result.clicked.hit_state || 'n/a'})`);
     }
     if (entry.assistant) {
       const parsed = entry.assistant.parsed || entry.assistant.raw;
