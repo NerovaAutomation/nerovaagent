@@ -42,6 +42,19 @@ const DATA_DIR = path.join(APP_ROOT, 'data');
 const RECIPES_DIR = path.join(DATA_DIR, 'recipes');
 const TMP_DIR = path.join(DATA_DIR, 'tmp');
 const USER_DATA_DIR = path.join(APP_ROOT, 'user-data');
+const RUN_LOG_DIR = path.join(APP_ROOT, 'logs', 'runs');
+
+const logSubscribers = new Set();
+
+function broadcastRunEvent(payload) {
+  if (!payload) return;
+  const data = JSON.stringify({ ...payload, timestamp: new Date().toISOString() });
+  for (const res of logSubscribers) {
+    try {
+      res.write(`data: ${data}\n\n`);
+    } catch {}
+  }
+}
 
 const app = express();
 // Basic HTTP request logger (concise)
@@ -208,6 +221,22 @@ app.get('/ui', (req, res) => {
   res.sendFile(path.join(PUBLIC_DIR, 'ui.html'));
 });
 
+app.get('/logs/stream', async (req, res) => {
+  if (!enforceMachineAffinity(req, res)) return;
+  try {
+    await fs.mkdir(RUN_LOG_DIR, { recursive: true }).catch(() => {});
+  } catch {}
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  try { res.flushHeaders?.(); } catch {}
+  res.write('\n');
+  logSubscribers.add(res);
+  req.on('close', () => {
+    logSubscribers.delete(res);
+  });
+});
+
 // Lightweight health probe used by installer CLIs
 app.get('/healthz', async (_req, res) => {
   try {
@@ -226,6 +255,141 @@ app.get('/healthz', async (_req, res) => {
     res.json(state);
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err && err.message || err) });
+  }
+});
+
+app.post('/agent/snapshot', async (req, res) => {
+  if (!enforceMachineAffinity(req, res)) return;
+  try {
+    const agent = await ensureAgentInitialized();
+    const [urlResult, shotResult] = await Promise.all([
+      sendAgentCommand('URL', null, { agent }).catch(() => null),
+      sendAgentCommand('SCREENSHOT', { options: { fullPage: false } }, { agent, timeout: 20000 })
+    ]);
+    const screenshot = shotResult?.data || shotResult?.result?.data || null;
+    if (!screenshot) {
+      throw new Error('screenshot_missing');
+    }
+    res.json({
+      ok: true,
+      url: urlResult?.url || '',
+      screenshot,
+      capturedAt: new Date().toISOString()
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err?.message || String(err) });
+  }
+});
+
+app.post('/agent/hittables', async (req, res) => {
+  if (!enforceMachineAffinity(req, res)) return;
+  try {
+    const { max = 1000, minSize = 8 } = req.body || {};
+    const agent = await ensureAgentInitialized();
+    const response = await sendAgentCommand('GET_HITTABLES_VIEWPORT', {
+      options: {
+        max: Math.max(10, Math.min(5000, Number(max) || 1000)),
+        minSize: Math.max(4, Math.min(100, Number(minSize) || 8))
+      }
+    }, { agent, timeout: 20000 });
+    const elements = Array.isArray(response?.elements) ? response.elements : [];
+    res.json({ ok: true, elements, count: elements.length });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err?.message || String(err) });
+  }
+});
+
+app.post('/agent/command', async (req, res) => {
+  if (!enforceMachineAffinity(req, res)) return;
+  const body = req.body || {};
+  const action = String(body.action || '').toLowerCase();
+  try {
+    const agent = await ensureAgentInitialized();
+    switch (action) {
+      case 'click': {
+        const vx = Number(body.vx);
+        const vy = Number(body.vy);
+        if (!Number.isFinite(vx) || !Number.isFinite(vy)) {
+          res.status(400).json({ ok: false, error: 'invalid_coordinates' });
+          return;
+        }
+        await sendAgentCommand('CLICK_VIEWPORT', {
+          vx,
+          vy,
+          button: body.button === 'right' ? 'right' : 'left',
+          clickCount: Number(body.clickCount) === 2 ? 2 : 1
+        }, { agent, timeout: 10000 });
+        if (typeof body.text === 'string' && body.text.length > 0) {
+          if (body.clear === true) {
+            await sendAgentCommand('CLEAR_ACTIVE_INPUT', {}, { agent, timeout: 2000 }).catch(() => {});
+          }
+          await sendAgentCommand('TYPE_TEXT', { text: body.text, delay: 120 }, { agent, timeout: 10000 }).catch(() => {});
+          if (body.submit === true) {
+            await sendAgentCommand('PRESS_ENTER', null, { agent, timeout: 5000 }).catch(() => {});
+          }
+        }
+        res.json({ ok: true });
+        return;
+      }
+      case 'scroll': {
+        const direction = body.direction === 'up' ? 'up' : 'down';
+        await sendAgentCommand('SCROLL_UNIVERSAL', { direction }, { agent, timeout: 8000 }).catch(() => {});
+        res.json({ ok: true });
+        return;
+      }
+      case 'navigate': {
+        const url = String(body.url || '').trim();
+        if (!url) {
+          res.status(400).json({ ok: false, error: 'missing_url' });
+          return;
+        }
+        await sendAgentCommand('NAVIGATE', { url }, { agent, timeout: 20000 });
+        res.json({ ok: true });
+        return;
+      }
+      case 'back': {
+        await sendAgentCommand('GO_BACK', null, { agent, timeout: 15000 }).catch(() => {});
+        res.json({ ok: true });
+        return;
+      }
+      case 'keypress': {
+        const key = String(body.key || '').trim();
+        if (!key) {
+          res.status(400).json({ ok: false, error: 'missing_key' });
+          return;
+        }
+        await sendAgentCommand('PRESS_KEY', { key }, { agent, timeout: 5000 }).catch(() => {});
+        res.json({ ok: true });
+        return;
+      }
+      default:
+        res.status(400).json({ ok: false, error: 'unsupported_action' });
+        return;
+    }
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err?.message || String(err) });
+  }
+});
+
+app.post('/assistant/decision', async (req, res) => {
+  if (!enforceMachineAffinity(req, res)) return;
+  try {
+    const { prompt, target, candidates = [], screenshot, openaiApiKey, assistantId } = req.body || {};
+    if (!screenshot || typeof screenshot !== 'string') {
+      res.status(400).json({ ok: false, error: 'screenshot_required' });
+      return;
+    }
+    const result = await callAssistantDecision({
+      prompt: prompt || '',
+      target: target || null,
+      elements: Array.isArray(candidates) ? candidates.slice(0, 20) : [],
+      screenshot,
+      openaiApiKey,
+      assistantId
+    });
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err?.message || String(err) });
   }
 });
 
@@ -2453,7 +2617,8 @@ async function startRemoteAgent({
     contextNotes,
     openaiApiKey: criticKey,
     assistantOpenAiKey: assistantKey,
-    assistantId
+    assistantId,
+    onEvent: (event) => broadcastRunEvent(event)
   });
   return result;
 }
