@@ -12,7 +12,7 @@ const DATA_DIR = path.join(os.homedir(), '.nerovaagent');
 const DEFAULT_REMOTE_ORIGIN = (process.env.NEROVA_AGENT_HTTP
   || process.env.NEROVA_AGENT_REMOTE_DEFAULT
   || process.env.NEROVA_AGENT_DEFAULT_ORIGIN
-  || 'http://ec2-3-92-220-237.compute-1.amazonaws.com:3333').trim();
+  || 'http://3.92.220.237:3333').trim();
 
 const AGENT_TOKEN = process.env.NEROVA_AGENT_AGENT_TOKEN || process.env.NEROVA_AGENT_TOKEN || '';
 const AGENT_ID = process.env.NEROVA_AGENT_ID || `${os.hostname()}-${process.pid}`;

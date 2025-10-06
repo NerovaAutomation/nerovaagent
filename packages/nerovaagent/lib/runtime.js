@@ -14,7 +14,7 @@ const PID_FILE = path.join(RUN_DIR, 'nerovaagent.pid');
 // Override by setting NEROVA_AGENT_HTTP or NEROVA_AGENT_REMOTE_DEFAULT when developing locally.
 const DEFAULT_REMOTE_ORIGIN = (process.env.NEROVA_AGENT_REMOTE_DEFAULT
   || process.env.NEROVA_AGENT_DEFAULT_ORIGIN
-  || 'http://ec2-3-92-220-237.compute-1.amazonaws.com:3333').trim();
+  || 'http://3.92.220.237:3333').trim();
 const MACHINE_HEADER = process.env.FLY_MACHINE_ID ? { 'Fly-Machine': process.env.FLY_MACHINE_ID } : null;
 
 export function resolveConfig(overrides = {}) {
