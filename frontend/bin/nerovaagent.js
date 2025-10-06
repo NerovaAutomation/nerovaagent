@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { readFileSync } from 'fs';
-import { runAgent, warmPlaywright } from '../src/runner.js';
+import readline from 'readline';
+import { runAgent, warmPlaywright, shutdownContext } from '../src/runner.js';
 
 function printHelp() {
   console.log(`nerovaagent commands:
@@ -73,7 +74,23 @@ function loadFileSafe(filePath) {
   }
 }
 
-async function handleStart(argv) {
+function tokenizeArgs(line) {
+  const tokens = [];
+  const regex = /"([^"\\]*(?:\\.[^"\\]*)*)"|'([^'\\]*(?:\\.[^'\\]*)*)'|\S+/g;
+  let match;
+  while ((match = regex.exec(line))) {
+    if (match[1] !== undefined) {
+      tokens.push(match[1].replace(/\\"/g, '"'));
+    } else if (match[2] !== undefined) {
+      tokens.push(match[2].replace(/\\'/g, "'"));
+    } else {
+      tokens.push(match[0]);
+    }
+  }
+  return tokens;
+}
+
+async function handleStart(argv, { suppressExit = false } = {}) {
   const options = parseArgs(argv);
   let prompt = options.prompt;
   if (!prompt && options.promptFile) {
@@ -105,19 +122,74 @@ async function handleStart(argv) {
     });
   } catch (err) {
     console.error('Failed to run agent:', err?.message || err);
-    process.exit(1);
+    if (!suppressExit) {
+      process.exit(1);
+    } else {
+      throw err;
+    }
   }
 }
 
 async function handlePlaywrightLaunch(argv) {
   const options = parseArgs(argv);
   const bootUrl = options.bootUrl || process.env.NEROVA_BOOT_URL || null;
+  const headlessOverride = false;
   try {
-    await warmPlaywright({ bootUrl });
+    await warmPlaywright({ bootUrl, headlessOverride });
   } catch (err) {
     console.error('Failed to warm Playwright:', err?.message || err);
     process.exit(1);
+    return;
   }
+
+  console.log('[nerovaagent] Enter commands (e.g., `start "<prompt>"` or `exit`).');
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: '> ' });
+
+  const cleanup = async () => {
+    await shutdownContext();
+    rl.close();
+    process.exit(0);
+  };
+
+  rl.on('line', async (line) => {
+    const raw = line.trim();
+    if (!raw) { rl.prompt(); return; }
+
+    const tokens = tokenizeArgs(raw);
+    if (!tokens.length) { rl.prompt(); return; }
+
+    const cmd = tokens[0] === 'nerovaagent' ? tokens[1] : tokens[0];
+    const args = tokens[0] === 'nerovaagent' ? tokens.slice(2) : tokens.slice(1);
+
+    if (!cmd) {
+      rl.prompt();
+      return;
+    }
+
+    if (cmd === 'exit' || cmd === 'quit') {
+      await cleanup();
+      return;
+    }
+
+    if (cmd === 'start') {
+      try {
+        await handleStart(args, { suppressExit: true });
+      } catch (err) {
+        console.error('Run failed:', err?.message || err);
+      }
+      rl.prompt();
+      return;
+    }
+
+    console.log(`Unknown command: ${cmd}`);
+    rl.prompt();
+  });
+
+  rl.on('SIGINT', async () => {
+    await cleanup();
+  });
+
+  rl.prompt();
 }
 
 async function main() {

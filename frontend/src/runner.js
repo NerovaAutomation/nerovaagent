@@ -462,8 +462,9 @@ async function resolveClickTarget({
   }
 }
 
-export async function warmPlaywright({ bootUrl = null } = {}) {
-  const { context } = await ensureContext();
+export async function warmPlaywright({ bootUrl = null, headlessOverride = false } = {}) {
+  warmExplicit = true;
+  const { context } = await ensureContext({ headlessOverride });
   const page = await ensureActivePage(context);
   if (bootUrl) {
     try {
@@ -473,6 +474,7 @@ export async function warmPlaywright({ bootUrl = null } = {}) {
     }
   }
   console.log('[nerovaagent] Playwright context ready.');
+  return { context, page };
 }
 
 export async function runAgent({
@@ -631,15 +633,28 @@ export async function runAgent({
 
     return { iterations, status, completeHistory };
   } finally {
-    if (created && process.env.NEROVA_KEEP_BROWSER !== '1') {
+    const keepBrowser = process.env.NEROVA_KEEP_BROWSER === '1' || warmExplicit;
+    if (!keepBrowser) {
       await context.close().catch(() => {});
       sharedContext = null;
       sharedPage = null;
+    } else {
+      sharedContext = context;
     }
   }
 }
 
+export async function shutdownContext() {
+  if (sharedContext && !sharedContext.isClosed?.()) {
+    try { await sharedContext.close(); } catch {}
+  }
+  sharedContext = null;
+  sharedPage = null;
+  warmExplicit = false;
+}
+
 export default {
   runAgent,
-  warmPlaywright
+  warmPlaywright,
+  shutdownContext
 };
