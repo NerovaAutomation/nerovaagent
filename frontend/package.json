@@ -1,0 +1,11 @@
+{
+  "name": "@nerova/agent",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "nerovaagent": "./bin/nerovaagent.js"
+  },
+  "dependencies": {
+    "@playwright/test": "^1.47.2"
+  }
+}
