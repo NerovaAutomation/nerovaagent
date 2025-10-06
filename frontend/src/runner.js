@@ -15,7 +15,20 @@ async function ensureUserDataDir() {
   return BROWSER_PROFILE;
 }
 
+let sharedContext = null;
+let sharedPage = null;
+
 async function ensureContext() {
+  if (sharedContext && !sharedContext.isClosed?.()) {
+    const pages = sharedContext.pages();
+    let current = pages.length ? pages[pages.length - 1] : null;
+    if (!current) {
+      current = sharedPage && !sharedPage.isClosed?.() ? sharedPage : await sharedContext.newPage();
+    }
+    sharedPage = current;
+    return { context: sharedContext, page: current, created: false };
+  }
+
   const userDataDir = await ensureUserDataDir();
   const context = await chromium.launchPersistentContext(userDataDir, {
     headless: process.env.NEROVA_HEADLESS === '1',
@@ -28,7 +41,9 @@ async function ensureContext() {
   });
   const pages = context.pages();
   const page = pages.length ? pages[pages.length - 1] : await context.newPage();
-  return { context, page };
+  sharedContext = context;
+  sharedPage = page;
+  return { context, page, created: true };
 }
 
 async function ensureActivePage(context) {
@@ -46,9 +61,11 @@ async function ensureActivePage(context) {
     }
     if (!pick) pick = await context.newPage();
     try { await pick.bringToFront(); } catch {}
+    sharedPage = pick;
     return pick;
   } catch {
     const page = await context.newPage();
+    sharedPage = page;
     return page;
   }
 }
@@ -445,6 +462,19 @@ async function resolveClickTarget({
   }
 }
 
+export async function warmPlaywright({ bootUrl = null } = {}) {
+  const { context } = await ensureContext();
+  const page = await ensureActivePage(context);
+  if (bootUrl) {
+    try {
+      await page.goto(bootUrl, { waitUntil: 'load' });
+    } catch (err) {
+      console.warn(`[nerovaagent] boot navigation failed: ${err?.message || err}`);
+    }
+  }
+  console.log('[nerovaagent] Playwright context ready.');
+}
+
 export async function runAgent({
   prompt,
   contextNotes = '',
@@ -459,7 +489,7 @@ export async function runAgent({
     throw new Error('prompt_required');
   }
 
-  const { context, page } = await ensureContext();
+  const { context, page, created } = await ensureContext();
   try {
     const activePage = await ensureActivePage(context);
     if (bootUrl) {
@@ -601,12 +631,15 @@ export async function runAgent({
 
     return { iterations, status, completeHistory };
   } finally {
-    if (process.env.NEROVA_KEEP_BROWSER !== '1') {
+    if (created && process.env.NEROVA_KEEP_BROWSER !== '1') {
       await context.close().catch(() => {});
+      sharedContext = null;
+      sharedPage = null;
     }
   }
 }
 
 export default {
-  runAgent
+  runAgent,
+  warmPlaywright
 };

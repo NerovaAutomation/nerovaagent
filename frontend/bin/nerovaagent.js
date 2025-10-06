@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 import { readFileSync } from 'fs';
-import { runAgent } from '../src/runner.js';
+import { runAgent, warmPlaywright } from '../src/runner.js';
 
 function printHelp() {
   console.log(`nerovaagent commands:
   start <prompt|string>             Run the agent workflow with the given prompt
+  playwright-launch                 Warm the local Playwright runtime
     --prompt-file <path>            Read the prompt from a file
     --context <string>              Additional context notes for the run
     --context-file <path>           Read context notes from a file
@@ -108,6 +109,17 @@ async function handleStart(argv) {
   }
 }
 
+async function handlePlaywrightLaunch(argv) {
+  const options = parseArgs(argv);
+  const bootUrl = options.bootUrl || process.env.NEROVA_BOOT_URL || null;
+  try {
+    await warmPlaywright({ bootUrl });
+  } catch (err) {
+    console.error('Failed to warm Playwright:', err?.message || err);
+    process.exit(1);
+  }
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const command = args[0];
@@ -118,6 +130,9 @@ async function main() {
   switch (command) {
     case 'start':
       await handleStart(args.slice(1));
+      break;
+    case 'playwright-launch':
+      await handlePlaywrightLaunch(args.slice(1));
       break;
     default:
       console.error(`Unknown command: ${command}`);
