@@ -35,6 +35,12 @@ npx playwright install chromium
 npx nerovaagent start "order coffee on doordash"
 ```
 
+One-line install (downloads only the `frontend/` artifact):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/NerovaAutomation/nerovaagent/main/frontend/install.sh | bash
+```
+
 Environment / flags:
 
 - `NEROVA_BRAIN_URL` or `--brain-url` to point at the backend.
