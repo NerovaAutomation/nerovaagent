@@ -205,7 +205,10 @@ async function collectViewportElements(page, options = {}) {
         const elAtPoint = document.elementFromPoint(center[0], center[1]);
         const occluded = elAtPoint && elAtPoint !== el && !el.contains(elAtPoint);
         const hitState = inViewport ? (occluded ? 'occluded' : 'hittable') : 'offscreen_page';
-        const name = collapseWhitespace((el.getAttribute('aria-label') || el.innerText || el.textContent || '').slice(0, 400));
+        const aria = el.getAttribute('aria-label');
+        const placeholder = el.getAttribute('placeholder');
+        const value = (el.value || '').toString();
+        const name = collapseWhitespace(((aria || '') || el.innerText || el.textContent || placeholder || value || '').slice(0, 400));
         const role = computeRole(el);
         const enabled = computeEnabled(el);
         const href = el.tagName && el.tagName.toLowerCase() === 'a' ? el.href || null : null;
