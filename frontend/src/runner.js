@@ -382,12 +382,13 @@ async function resolveClickTarget({
     ? decision.target.center
     : null;
   const candidates = filterByRadius(elements, center);
+  const hittableCandidates = candidates.filter((element) => element?.hit_state === 'hittable');
+  const preferredPool = hittableCandidates.length ? hittableCandidates : candidates;
   const exactHints = Array.isArray(hints.text_exact) ? hints.text_exact.map(normalizeText).filter(Boolean) : [];
   let exact = null;
   if (exactHints.length) {
-    const exactPool = candidates.filter((element) => exactHints.includes(normalizeText(element?.name)));
-    const hittable = exactPool.filter((element) => element?.hit_state === 'hittable');
-    const pool = hittable.length ? hittable : exactPool;
+    const exactPool = preferredPool.filter((element) => exactHints.includes(normalizeText(element?.name)));
+    const pool = exactPool.length ? exactPool : [];
     if (pool.length) {
       exact = pool.reduce((best, current) => {
         if (!best) return current;
@@ -421,14 +422,14 @@ async function resolveClickTarget({
     };
   }
 
-  if (candidates.length) {
+  if (preferredPool.length) {
     const fuzzyTerms = [];
     if (Array.isArray(hints.text_contains)) fuzzyTerms.push(...hints.text_contains);
     if (typeof hints.text_partial === 'string') fuzzyTerms.push(hints.text_partial);
     const normalized = fuzzyTerms.map(normalizeText).filter(Boolean);
-    let pick = candidates[0];
+    let pick = preferredPool[0];
     if (normalized.length) {
-      const match = candidates.find((element) => {
+      const match = preferredPool.find((element) => {
         const name = normalizeText(element?.name);
         return normalized.some((term) => name.includes(term));
       });
