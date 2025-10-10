@@ -260,23 +260,13 @@ async function executeAction(page, action = {}) {
       let clicked = false;
       const selector = action.target?.selector;
       const selectorUsable = selector && selector !== 'html' && selector !== 'body';
-      if (selectorUsable) {
-        try {
-          await page.click(selector, { timeout: 2500, force: true });
-          clicked = true;
-          console.log(`[nerovaagent] click selector ${selector}`);
-        } catch (err) {
-          console.warn(`[nerovaagent] selector click failed (${selector}):`, err?.message || err);
-        }
-      }
-      if (!clicked && Array.isArray(action.center) && action.center.length === 2) {
+    if (Array.isArray(action.center) && action.center.length === 2) {
         const [x, y] = action.center.map((value) => Math.round(value));
         await page.mouse.click(x, y, { button: 'left', clickCount: 1 });
         clicked = true;
         console.log(`[nerovaagent] click coordinates (${x}, ${y})`);
-      }
-      if (!clicked) {
-        console.warn('[nerovaagent] click action skipped (no selector or coordinates)');
+      } else {
+        console.warn('[nerovaagent] click action skipped (no coordinates)');
         break;
       }
       await delay(120);
@@ -674,12 +664,11 @@ export async function runAgent({
             id: selection.element?.id || decision?.target?.id || null,
             name: selection.element?.name || decision?.target?.hints?.text_partial || null,
             role: selection.element?.role || decision?.target?.role || null,
-            selector: selection.element?.selector || null,
             content: decision?.target?.content || null,
             clear: decision?.target?.clear || false,
             submit: decision?.target?.submit || false
           };
-          console.log(`[nerovaagent] click target name=${target.name || 'unknown'} source=${selection.source || selection.status} selector=${target.selector || 'n/a'} center=${Array.isArray(selection.center) ? selection.center.join(',') : 'n/a'}`);
+          console.log(`[nerovaagent] click target name=${target.name || 'unknown'} source=${selection.source || selection.status} center=${Array.isArray(selection.center) ? selection.center.join(',') : 'n/a'}`);
           await executeAction(activePage, {
             type: 'click',
             center: selection.center,
