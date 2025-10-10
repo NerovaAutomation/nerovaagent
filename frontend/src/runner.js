@@ -184,6 +184,8 @@ async function collectViewportElements(page, options = {}) {
     const items = [];
     for (const el of nodes) {
       try {
+        const tagName = (el.tagName || '').toLowerCase();
+        if (tagName === 'html' || tagName === 'head') continue;
         if (!isVisible(el)) continue;
         const rect = el.getBoundingClientRect();
         if (rect.width < minSize && rect.height < minSize) continue;
@@ -202,6 +204,8 @@ async function collectViewportElements(page, options = {}) {
         const role = computeRole(el);
         const enabled = computeEnabled(el);
         const href = el.tagName && el.tagName.toLowerCase() === 'a' ? el.href || null : null;
+        const selector = bestSelector(el);
+        if (selector && (selector === 'html' || selector === 'head' || selector === 'body')) continue;
         items.push({
           id: `${role}-${items.length}`,
           name,
@@ -210,7 +214,7 @@ async function collectViewportElements(page, options = {}) {
           hit_state: hitState,
           center,
           rect: [clamp(rect.left), clamp(rect.top), clamp(rect.width), clamp(rect.height)],
-          selector: bestSelector(el),
+          selector,
           href,
           className: (el.className && el.className.toString && el.className.toString()) || ''
         });
@@ -248,13 +252,15 @@ async function executeAction(page, action = {}) {
     case 'click': {
       await page.bringToFront().catch(() => {});
       let clicked = false;
-      if (action.target?.selector) {
+      const selector = action.target?.selector;
+      const selectorUsable = selector && selector !== 'html' && selector !== 'body';
+      if (selectorUsable) {
         try {
-          await page.click(action.target.selector, { timeout: 2500, force: true });
+          await page.click(selector, { timeout: 2500, force: true });
           clicked = true;
-          console.log(`[nerovaagent] click selector ${action.target.selector}`);
+          console.log(`[nerovaagent] click selector ${selector}`);
         } catch (err) {
-          console.warn(`[nerovaagent] selector click failed (${action.target.selector}):`, err?.message || err);
+          console.warn(`[nerovaagent] selector click failed (${selector}):`, err?.message || err);
         }
       }
       if (!clicked && Array.isArray(action.center) && action.center.length === 2) {
