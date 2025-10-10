@@ -422,7 +422,70 @@ async function resolveClickTarget({
     };
   }
 
+  const tryAssistant = async (pool) => {
+    if (!pool.length) return null;
+    const assistantPayload = {
+      mode: MODE,
+      prompt,
+      target: decision?.target || null,
+      elements: pool.slice(0, 12),
+      screenshot: `data:image/png;base64,${screenshot}`,
+      assistantKey,
+      assistantId
+    };
+    try {
+      const response = await postJson(`${brainUrl}/v1/brain/assistant`, assistantPayload);
+      const parsed = response?.assistant?.parsed || response?.assistant || null;
+      if (
+        parsed &&
+        (parsed.action === 'click' || parsed.action === 'accept') &&
+        Array.isArray(parsed.center) && parsed.center.length === 2 &&
+        typeof parsed.confidence === 'number' && parsed.confidence >= 0.6
+      ) {
+        const element = pool.find((el) => el?.id === parsed.candidate_id) || pool[0] || null;
+        return {
+          status: 'assistant',
+          source: 'assistant',
+          element,
+          center: parsed.center,
+          assistant: response.assistant,
+          debug: {
+            hints,
+            center,
+            elements: elements.slice(0, 50),
+            assistantRequest: pool.slice(0, 12)
+          }
+        };
+      }
+      return {
+        status: 'await_assistance',
+        assistant: response.assistant,
+        debug: {
+          hints,
+          center,
+          elements: elements.slice(0, 50)
+        }
+      };
+    } catch (error) {
+      console.warn('[nerovaagent] assistant decision error:', error?.message || error);
+      return {
+        status: 'assistant_error',
+        error: error?.message || String(error),
+        debug: {
+          hints,
+          center,
+          elements: elements.slice(0, 50)
+        }
+      };
+    }
+  };
+
   if (preferredPool.length) {
+    const assistantResult = await tryAssistant(preferredPool);
+    if (assistantResult && assistantResult.status === 'assistant') {
+      return assistantResult;
+    }
+
     const fuzzyTerms = [];
     if (Array.isArray(hints.text_contains)) fuzzyTerms.push(...hints.text_contains);
     if (typeof hints.text_partial === 'string') fuzzyTerms.push(hints.text_partial);
@@ -453,61 +516,21 @@ async function resolveClickTarget({
         }
       };
     }
+    if (assistantResult) {
+      return assistantResult;
+    }
   }
 
-  const small = elements.slice(0, 12);
-  const assistantPayload = {
-    mode: MODE,
-    prompt,
-    target: decision?.target || null,
-    elements: small,
-    screenshot: `data:image/png;base64,${screenshot}`,
-    assistantKey,
-    assistantId
-  };
-  try {
-    const response = await postJson(`${brainUrl}/v1/brain/assistant`, assistantPayload);
-    const parsed = response?.assistant?.parsed || null;
-    if (
-      parsed &&
-      (parsed.action === 'click' || parsed.action === 'accept') &&
-      Array.isArray(parsed.center) && parsed.center.length === 2 &&
-      typeof parsed.confidence === 'number' && parsed.confidence >= 0.6
-    ) {
-      return {
-        status: 'assistant',
-        source: 'assistant',
-        element: small.find((el) => el?.id === parsed.candidate_id) || null,
-        center: parsed.center,
-        assistant: response.assistant,
-        debug: {
-          hints,
-          center,
-          elements: elements.slice(0, 50),
-          assistantRequest: small
-        }
-      };
+  const lastResort = await tryAssistant(elements.slice(0, 12));
+  if (lastResort) return lastResort;
+  return {
+    status: 'await_assistance',
+    debug: {
+      hints,
+      center,
+      elements: elements.slice(0, 50)
     }
-    return {
-      status: 'await_assistance',
-      assistant: response.assistant,
-      debug: {
-        hints,
-        center,
-        elements: elements.slice(0, 50)
-      }
-    };
-  } catch (error) {
-    return {
-      status: 'assistant_error',
-      error: error?.message || String(error),
-      debug: {
-        hints,
-        center,
-        elements: elements.slice(0, 50)
-      }
-    };
-  }
+  };
 }
 
 export async function warmPlaywright({ bootUrl = null, headlessOverride = false } = {}) {
