@@ -90,7 +90,7 @@ if [ -d "$LIB_DIR" ]; then
   export LD_LIBRARY_PATH="${LIB_DIR}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
   export DYLD_LIBRARY_PATH="${LIB_DIR}${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
 fi
-"$NODE_BIN" "$ROOT_DIR/packages/nerovaagent/bin/nerovaagent.js" "$@"
+"$NODE_BIN" "$ROOT_DIR/nerovaagent/frontend/bin/nerovaagent.js" "$@"
 SH
 chmod +x bin/nerovaagent
 
@@ -133,7 +133,6 @@ $SUDO chmod +x "$INSTALL_DIR/bin/nerovaagent"
 
 log "Nerova agent installed to $INSTALL_DIR"
 log "Next steps:"
-log "  nerovaagent playwright-launch"
 log "  nerovaagent start \"<prompt>\""
 
 exit 0

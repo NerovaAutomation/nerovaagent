@@ -12,6 +12,9 @@ user-data/
 *.log
 logs/
 
+# Environment secrets
+.env
+
 # OS junk
 .DS_Store
 

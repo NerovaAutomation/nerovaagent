@@ -32,22 +32,75 @@ Strict rules:
  - Use action="resend" ONLY if the intended/expected candidate is not visible in the screenshot and the page appears to be still loading or an initial blank/transition frame; on resend the runtime will immediately retry the same prompt with a fresh screenshot of the same viewport.
 - Prefer deterministic visible signals: text + role.
 - Never return "accept" unless the chosen control is visibly present.
-- For action=scroll, specify direction (up/down) and amount (small/medium/large).
-- Include a concise reason (<= 140 characters) to justify the action referencing concrete on-screen elements.
-- Always include a "complete" array (may be empty). Add milestones that are definitively finished (e.g., \"opened https://example.com\").
-- Include "confidence" 0..1.
-- If action is click_by_text_role, provide object: { role, text, fallback_text?, selector_hint?, reason }.
-- If action is navigate, provide field "url" (absolute) and reason.
-- If action is scroll, include direction and amount (small/medium/large).
-- If action is back, reason must explain why the current page is incorrect or a dead-end.
-- If action is stop, include final summary.
-- If the screenshot shows blockers (cookie banner, modal, etc.), prioritize dismissing them first.
+- For action="scroll" include: scroll { direction: "down" | "up", pages?: 1..3 }.
+- Include a non-empty reason and a numeric confidence 0..1.
+ - Include what has been completed this step under a top-level "complete" array (use [] if none).
 
-General guidance:
-- Use what is visibly present; do not invent controls.
-- Prefer the element that most directly advances the goal right now.
-- If nothing useful is visible, return action="scroll" (down by default) or action="resend" if page is blank/loading.
-- If you already completed the main goal, return action="stop" with a confirming summary.`;
+Context override (active only when goal.new_context is non-empty):
+- Treat goal.new_context as a temporary subgoal that overrides the original prompt.
+- Include keep: true|false (true = more steps needed to finish the subgoal; false = subgoal finished). Do not return stop while new_context is active.
+
+Universal schema (ALL ACTIONS):
+- Required fields: action (string), reason (string), confidence (number), continue (boolean).
+- Optional depending on action:
+  - target (for click_by_text_role)
+  - scroll { direction:"down"|"up", pages?:1..3 } (for scroll)
+  - url (for navigate)
+  - content (for typing after focus)
+  - clear (boolean; delete all pre-existing text before typing)
+
+
+Examples (non-click actions include continue):
+{ "action":"scroll", "scroll": { "direction":"down", "pages":1 }, "reason":"…", "confidence":0.7, "continue": true }
+{ "action":"back", "reason":"…", "confidence":0.6, "continue": true }
+{ "action":"navigate", "url":"https://example.com/cart", "reason":"…", "confidence":0.8, "continue": true }
+
+Output format for click actions (REQUIRED):
+- Return exactly: { "action": "click_by_text_role", "target": { "id": "Step 2", "type": "click_by_candidates", "center": [vx, vy], "hints": { "text_exact": string[], "roles": string[], "text": string[] }, "content": optional string, "clear": optional boolean }, "reason": "…", "confidence": 0.0, "continue": true }
+- target.center MUST be present (CSS viewport pixels).
+- Use arrays for hints; do NOT use singular fields like "role" or a single "text_exact" string. If none, use empty arrays.
+- Do NOT return type_in_text_role. If typing is needed after focusing an input, include "content".
+ - If the intent requires replacing pre-existing text in an input, set target.clear=true (meaning: delete all text in the focused input before typing), then include the desired "content".
+
+Objective:
+- Make the best single decision in the current situation to advance toward the final goal from the user prompt.
+
+Screen-first precedence:
+- Always prioritize what is visible on the current screen.
+
+Visual-first decision policy:
+- Decide only from the screenshot (no hidden assumptions).
+- If a visible control more directly advances the end goal, return click_by_text_role and include a full Step-2 replacement target with text_exact first (then fallbacks).
+- Prefer direct on-screen goal-aligned controls over indirect paths. Only type/search when the needed entity/control is not visible.
+- If nothing clearly aligns, return scroll (direction/pages). Do not click unrelated CTAs.
+- When the page is a different variant than expected, pick the visible entry point whose text best matches the goal keywords.
+- Never choose controls whose text contradicts the goal keywords.
+
+Visibility constraint (MUST SEE ON SCREEN):
+- Only return click_by_text_role when the replacement target is fully visible in the screenshot (not offscreen, not clipped, not clearly occluded).
+- Edge-centering rule: If the chosen target is near the top/bottom edges (≈ <90px from top OR ≈ <120px from bottom), first return action="scroll" with scroll { direction: "up" or "down", pages: 1 }, keep the same target, then decide again.
+
+Full-page scan discipline:
+- Scan the ENTIRE screenshot (top, middle, bottom) before deciding; do not anchor on one region.
+- Do NOT default to search if a goal-aligned entity/control is visible anywhere on screen.
+
+Popup awareness:
+- Detect blocking overlays/modals/popups/banners (e.g., cookie consent, newsletter modal, full-screen dialog). If they block the intended action, first dismiss/close them using click_by_text_role on visible controls like “Close”, “×”, “No thanks”, “Accept”. If non-blocking, ignore and proceed with the primary goal.
+
+Navigation optimization:
+- Prefer the most direct, on-screen link/button toward the goal (e.g., a deep link to the target page/tile) over generic home/dashboard links. If a deep link is visible and relevant, choose it now.
+- If a chosen deep link fails to load correctly on the next turn (e.g., unexpected page or error), then fall back to a safer, more general navigation link.
+
+Complete history awareness:
+- You will receive recent complete_history (ordered). Treat each entry as DONE. Do not attempt to redo or re-verify them unless the page clearly reset.
+- When choosing the next action, advance the next unmet milestone implied by the goal and complete_history. If complete_history contains a matching milestone (e.g., variant selected), prefer the next step (e.g., Add to cart) over re-selecting variants.
+
+Stuck handling:
+- If recent decisions have not produced any new "complete" items (no visible progress), change strategy immediately.
+- Try a different viable on-screen control, reverse scroll direction, use back, or navigate to a better entry point. Do not loop re-checking the same milestone.
+
+Goal-first rule:
+- Choose the single action that most directly advances the prompt’s end goal NOW; avoid redundant actions (e.g., do not search for something already visible to click).`;
 }
 
 export async function callCritic({
@@ -65,19 +118,30 @@ export async function callCritic({
   if (!apiKey) throw new Error('critic_api_key_missing');
 
   const systemPrompt = buildCriticSystemPrompt();
+  const contextActive = !!(contextNotes && contextNotes.trim());
+  const plannedStep = {
+    id: 'Step 2',
+    type: 'click_by_candidates',
+    hints: {},
+    content: ''
+  };
   const userPayload = {
     goal: {
       original_prompt: prompt,
-      new_context: contextNotes
+      new_context: contextActive ? contextNotes : ''
     },
     context: {
-      current_url: currentUrl
+      current_url: currentUrl,
+      context_active: contextActive,
+      context_step: contextActive ? 0 : 0
     },
     plan_window: {
-      planned_step: null,
+      planned_step: plannedStep,
       next_steps: []
     },
-    complete_history: Array.isArray(completeHistory) ? completeHistory : []
+    complete_history: Array.isArray(completeHistory)
+      ? completeHistory.slice(-20)
+      : []
   };
 
   const chosenModel = model || 'gpt-5';
@@ -342,5 +406,6 @@ export async function callAssistantDecision({
 
 export default {
   callCritic,
+  callAssistantDecision,
   defaultAssistantKey
 };
