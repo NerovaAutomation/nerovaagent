@@ -246,32 +246,49 @@ async function executeAction(page, action = {}) {
       break;
     }
     case 'click': {
-      if (Array.isArray(action.center) && action.center.length === 2) {
+      await page.bringToFront().catch(() => {});
+      let clicked = false;
+      if (action.target?.selector) {
+        try {
+          await page.click(action.target.selector, { timeout: 2500, force: true });
+          clicked = true;
+          console.log(`[nerovaagent] click selector ${action.target.selector}`);
+        } catch (err) {
+          console.warn(`[nerovaagent] selector click failed (${action.target.selector}):`, err?.message || err);
+        }
+      }
+      if (!clicked && Array.isArray(action.center) && action.center.length === 2) {
         const [x, y] = action.center.map((value) => Math.round(value));
         await page.mouse.click(x, y, { button: 'left', clickCount: 1 });
-        await delay(120);
-        if (action.target?.clear) {
-          await page.evaluate(() => {
-            try {
-              const el = document.activeElement;
-              if (!el) return;
-              if ('value' in el) {
-                el.value = '';
-                el.dispatchEvent(new Event('input', { bubbles: true }));
-                el.dispatchEvent(new Event('change', { bubbles: true }));
-              } else if (el.isContentEditable) {
-                el.textContent = '';
-                el.dispatchEvent(new Event('input', { bubbles: true }));
-              }
-            } catch {}
-          });
-          await delay(60);
-        }
-        if (typeof action.target?.content === 'string' && action.target.content.length) {
-          await page.keyboard.type(action.target.content, { delay: 120 });
-          if (action.target.submit) {
-            await page.keyboard.press('Enter');
-          }
+        clicked = true;
+        console.log(`[nerovaagent] click coordinates (${x}, ${y})`);
+      }
+      if (!clicked) {
+        console.warn('[nerovaagent] click action skipped (no selector or coordinates)');
+        break;
+      }
+      await delay(120);
+      if (action.target?.clear) {
+        await page.evaluate(() => {
+          try {
+            const el = document.activeElement;
+            if (!el) return;
+            if ('value' in el) {
+              el.value = '';
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+            } else if (el.isContentEditable) {
+              el.textContent = '';
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+            }
+          } catch {}
+        });
+        await delay(60);
+      }
+      if (typeof action.target?.content === 'string' && action.target.content.length) {
+        await page.keyboard.type(action.target.content, { delay: 120 });
+        if (action.target.submit) {
+          await page.keyboard.press('Enter');
         }
       }
       break;
@@ -606,25 +623,27 @@ export async function runAgent({
       }
 
       if (decision.action === 'click_by_text_role' || decision.action === 'accept') {
-        const selection = await resolveClickTarget({
-          decision,
-          elements,
-          screenshot: screenshotB64,
-          prompt: prompt.trim(),
-          brainUrl: brainUrl.replace(/\/$/, ''),
-          assistantKey,
-          assistantId
-        });
+       const selection = await resolveClickTarget({
+         decision,
+         elements,
+         screenshot: screenshotB64,
+         prompt: prompt.trim(),
+         brainUrl: brainUrl.replace(/\/$/, ''),
+         assistantKey,
+         assistantId
+       });
 
         if (selection.status === 'ok' || selection.status === 'assistant') {
           const target = {
             id: selection.element?.id || decision?.target?.id || null,
             name: selection.element?.name || decision?.target?.hints?.text_partial || null,
             role: selection.element?.role || decision?.target?.role || null,
+            selector: selection.element?.selector || null,
             content: decision?.target?.content || null,
             clear: decision?.target?.clear || false,
             submit: decision?.target?.submit || false
           };
+          console.log(`[nerovaagent] click target name=${target.name || 'unknown'} source=${selection.source || selection.status} selector=${target.selector || 'n/a'} center=${Array.isArray(selection.center) ? selection.center.join(',') : 'n/a'}`);
           await executeAction(activePage, {
             type: 'click',
             center: selection.center,
