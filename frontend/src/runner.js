@@ -258,9 +258,11 @@ async function executeAction(page, action = {}) {
     case 'click': {
       await page.bringToFront().catch(() => {});
       let clicked = false;
-      const selector = action.target?.selector;
-      const selectorUsable = selector && selector !== 'html' && selector !== 'body';
-    if (Array.isArray(action.center) && action.center.length === 2) {
+      if (Array.isArray(action.center) && action.center.length === 2) {
+        try {
+          const viewport = await page.viewportSize();
+          console.log(`[nerovaagent] viewport=${viewport?.width || 'n/a'}x${viewport?.height || 'n/a'} center=${action.center.join(',')}`);
+        } catch {}
         const [x, y] = action.center.map((value) => Math.round(value));
         await page.mouse.click(x, y, { button: 'left', clickCount: 1 });
         clicked = true;
@@ -380,6 +382,14 @@ async function resolveClickTarget({
   const candidates = filterByRadius(elements, center);
   const hittableCandidates = candidates.filter((element) => element?.hit_state === 'hittable');
   const preferredPool = hittableCandidates.length ? hittableCandidates : candidates;
+  console.log(`[nerovaagent] resolveClickTarget candidates=${candidates.length} hittable=${hittableCandidates.length}`);
+  if (preferredPool.length) {
+    console.log('[nerovaagent] top candidates:');
+    for (const item of preferredPool.slice(0, 5)) {
+      const rect = item.rect ? item.rect.join(',') : 'n/a';
+      console.log(`  - name="${item.name || ''}" role=${item.role || ''} hit=${item.hit_state || ''} center=${Array.isArray(item.center) ? item.center.join(',') : 'n/a'} rect=${rect}`);
+    }
+  }
   const exactHints = Array.isArray(hints.text_exact) ? hints.text_exact.map(normalizeText).filter(Boolean) : [];
   let exact = null;
   if (exactHints.length) {
@@ -404,6 +414,7 @@ async function resolveClickTarget({
       : Array.isArray(exact.rect) && exact.rect.length === 4
         ? [exact.rect[0] + (exact.rect[2] || 0) / 2, exact.rect[1] + (exact.rect[3] || 0) / 2]
         : [0, 0];
+    console.log('[nerovaagent] exact match chosen:', { name: exact.name, role: exact.role, center: centerPoint, rect: exact.rect });
     return {
       status: 'ok',
       source: 'exact',
@@ -500,6 +511,7 @@ async function resolveClickTarget({
         : Array.isArray(pick.rect) && pick.rect.length === 4
           ? [pick.rect[0] + (pick.rect[2] || 0) / 2, pick.rect[1] + (pick.rect[3] || 0) / 2]
           : [0, 0];
+      console.log('[nerovaagent] fuzzy pick chosen:', { name: pick.name, role: pick.role, center: centerPoint, rect: pick.rect });
       return {
         status: 'ok',
         source: 'fuzzy',
