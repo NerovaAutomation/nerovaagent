@@ -31,6 +31,8 @@ async function ensureContext({ headlessOverride } = {}) {
   }
 
   const userDataDir = await ensureUserDataDir();
+  try { await fs.rm(path.join(userDataDir, 'SingletonLock')); } catch {}
+  try { await fs.rm(path.join(userDataDir, 'SingletonCookie')); } catch {}
   const headlessEnv = process.env.NEROVA_HEADLESS === '1';
   const headless = typeof headlessOverride === 'boolean' ? headlessOverride : headlessEnv;
   const context = await chromium.launchPersistentContext(userDataDir, {
