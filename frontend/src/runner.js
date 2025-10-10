@@ -180,6 +180,9 @@ async function collectViewportElements(page, options = {}) {
       }
     };
 
+    const viewW = Math.max(1, window.innerWidth || 0);
+    const viewH = Math.max(1, window.innerHeight || 0);
+    const maxArea = viewW * viewH * 1.5;
     const nodes = Array.from(document.querySelectorAll('*'));
     const items = [];
     for (const el of nodes) {
@@ -189,6 +192,8 @@ async function collectViewportElements(page, options = {}) {
         if (!isVisible(el)) continue;
         const rect = el.getBoundingClientRect();
         if (rect.width < minSize && rect.height < minSize) continue;
+        if ((rect.width * rect.height) > maxArea) continue;
+        if (rect.width >= viewW * 0.95 && rect.height >= viewH * 0.95) continue;
         const center = [clamp(rect.left + rect.width / 2), clamp(rect.top + rect.height / 2)];
         const viewport = {
           left: rect.left,
@@ -212,6 +217,7 @@ async function collectViewportElements(page, options = {}) {
         }
         if (role === 'generic' && !href && !enabled) continue;
         if (!name && role === 'generic') continue;
+        if (role === 'generic' && rect.width >= viewW * 0.8 && rect.height >= viewH * 0.8) continue;
         items.push({
           id: `${role}-${items.length}`,
           name,
