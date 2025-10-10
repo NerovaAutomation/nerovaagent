@@ -185,7 +185,7 @@ async function collectViewportElements(page, options = {}) {
     for (const el of nodes) {
       try {
         const tagName = (el.tagName || '').toLowerCase();
-        if (tagName === 'html' || tagName === 'head') continue;
+        if (tagName === 'html' || tagName === 'head' || tagName === 'body') continue;
         if (!isVisible(el)) continue;
         const rect = el.getBoundingClientRect();
         if (rect.width < minSize && rect.height < minSize) continue;
@@ -205,7 +205,13 @@ async function collectViewportElements(page, options = {}) {
         const enabled = computeEnabled(el);
         const href = el.tagName && el.tagName.toLowerCase() === 'a' ? el.href || null : null;
         const selector = bestSelector(el);
-        if (selector && (selector === 'html' || selector === 'head' || selector === 'body')) continue;
+        if (selector) {
+          const lowerSelector = selector.toLowerCase();
+          if (lowerSelector === 'html' || lowerSelector === 'head' || lowerSelector === 'body') continue;
+          if (/html\s*>/.test(lowerSelector) || /body\s*>/.test(lowerSelector)) continue;
+        }
+        if (role === 'generic' && !href && !enabled) continue;
+        if (!name && role === 'generic') continue;
         items.push({
           id: `${role}-${items.length}`,
           name,
