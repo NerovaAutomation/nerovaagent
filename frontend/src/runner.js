@@ -30,25 +30,44 @@ async function ensureContext({ headlessOverride } = {}) {
     return { context: sharedContext, page: current, created: false };
   }
 
-  const userDataDir = await ensureUserDataDir();
-  try { await fs.rm(path.join(userDataDir, 'SingletonLock')); } catch {}
-  try { await fs.rm(path.join(userDataDir, 'SingletonCookie')); } catch {}
   const headlessEnv = process.env.NEROVA_HEADLESS === '1';
   const headless = typeof headlessOverride === 'boolean' ? headlessOverride : headlessEnv;
-  const context = await chromium.launchPersistentContext(userDataDir, {
-    headless,
-    viewport: { width: 1280, height: 720 },
-    args: [
-      '--disable-background-timer-throttling',
-      '--disable-renderer-backgrounding',
-      '--disable-backgrounding-occluded-windows'
-    ]
-  });
-  const pages = context.pages();
-  const page = pages.length ? pages[pages.length - 1] : await context.newPage();
-  sharedContext = context;
-  sharedPage = page;
-  return { context, page, created: true };
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (attempt === 0) {
+      await ensureUserDataDir();
+    } else {
+      await fs.rm(BROWSER_PROFILE, { recursive: true, force: true }).catch(() => {});
+      await ensureUserDataDir();
+    }
+    try {
+      await fs.rm(path.join(BROWSER_PROFILE, 'SingletonLock')).catch(() => {});
+      await fs.rm(path.join(BROWSER_PROFILE, 'SingletonCookie')).catch(() => {});
+      await fs.rm(path.join(BROWSER_PROFILE, 'SingletonSocket')).catch(() => {});
+      await fs.rm(path.join(BROWSER_PROFILE, 'SingletonSocket.lock')).catch(() => {});
+    } catch {}
+    try {
+      const context = await chromium.launchPersistentContext(BROWSER_PROFILE, {
+        headless,
+        viewport: { width: 1280, height: 720 },
+        args: [
+          '--disable-background-timer-throttling',
+          '--disable-renderer-backgrounding',
+          '--disable-backgrounding-occluded-windows'
+        ]
+      });
+      const pages = context.pages();
+      const page = pages.length ? pages[pages.length - 1] : await context.newPage();
+      sharedContext = context;
+      sharedPage = page;
+      return { context, page, created: true };
+    } catch (err) {
+      if (attempt === 1) throw err;
+      // Clean profile and retry
+    }
+  }
+
+  throw new Error('Failed to initialise Playwright context');
 }
 
 async function ensureActivePage(context) {
