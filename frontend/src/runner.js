@@ -17,8 +17,9 @@ async function ensureUserDataDir() {
 
 let sharedContext = null;
 let sharedPage = null;
+let warmExplicit = false;
 
-async function ensureContext() {
+async function ensureContext({ headlessOverride } = {}) {
   if (sharedContext && !sharedContext.isClosed?.()) {
     const pages = sharedContext.pages();
     let current = pages.length ? pages[pages.length - 1] : null;
@@ -30,8 +31,10 @@ async function ensureContext() {
   }
 
   const userDataDir = await ensureUserDataDir();
+  const headlessEnv = process.env.NEROVA_HEADLESS === '1';
+  const headless = typeof headlessOverride === 'boolean' ? headlessOverride : headlessEnv;
   const context = await chromium.launchPersistentContext(userDataDir, {
-    headless: process.env.NEROVA_HEADLESS === '1',
+    headless,
     viewport: { width: 1280, height: 720 },
     args: [
       '--disable-background-timer-throttling',
