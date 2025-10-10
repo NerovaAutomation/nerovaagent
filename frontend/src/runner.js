@@ -514,7 +514,10 @@ export async function runAgent({
       }
       const screenshotB64 = screenshotBuffer.toString('base64');
       const elements = await collectViewportElements(activePage, { max: 1500 });
-      const currentUrl = await activePage.url().catch(() => '');
+      let currentUrl = '';
+      try {
+        currentUrl = await activePage.url();
+      } catch {}
 
       const criticPayload = {
         mode: MODE,
