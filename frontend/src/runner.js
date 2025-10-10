@@ -387,8 +387,21 @@ async function resolveClickTarget({
     : null;
   const candidates = filterByRadius(elements, center);
   const hittableCandidates = candidates.filter((element) => element?.hit_state === 'hittable');
-  const preferredPool = hittableCandidates.length ? hittableCandidates : candidates;
-  console.log(`[nerovaagent] resolveClickTarget candidates=${candidates.length} hittable=${hittableCandidates.length}`);
+  let preferredPool = hittableCandidates.length ? [...hittableCandidates] : [...candidates];
+  const expectedRoles = new Set();
+  if (decision?.target?.role) expectedRoles.add(decision.target.role);
+  if (Array.isArray(hints.roles)) {
+    for (const role of hints.roles) {
+      if (role) expectedRoles.add(role);
+    }
+  }
+  if (expectedRoles.size) {
+    const roleFiltered = preferredPool.filter((element) => expectedRoles.has(element?.role));
+    if (roleFiltered.length) {
+      preferredPool = roleFiltered;
+    }
+  }
+  console.log(`[nerovaagent] resolveClickTarget candidates=${candidates.length} hittable=${hittableCandidates.length} roleFilter=${Array.from(expectedRoles).join(',') || 'none'}`);
   if (preferredPool.length) {
     console.log('[nerovaagent] top candidates:');
     for (const item of preferredPool.slice(0, 5)) {
