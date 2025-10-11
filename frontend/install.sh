@@ -15,7 +15,7 @@ mkdir -p "$TMP_DIR" "$INSTALL_ROOT" "$BIN_DIR"
 curl -fsSL "$REPO_URL/archive/refs/heads/${BRANCH}.tar.gz" | tar -xz -C "$TMP_DIR"
 EXTRACTED_DIR="$TMP_DIR/nerovaagent-${BRANCH}"
 
-rsync -a --delete "$EXTRACTED_DIR/frontend/" "$INSTALL_ROOT/frontend/"
+rsync -a --delete "$EXTRACTED_DIR/nerovaagent/frontend/" "$INSTALL_ROOT/frontend/"
 
 pushd "$INSTALL_ROOT/frontend" >/dev/null
 npm install --omit=dev

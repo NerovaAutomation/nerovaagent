@@ -9,6 +9,7 @@ const DEFAULT_BRAIN_URL = process.env.NEROVA_BRAIN_URL || 'http://127.0.0.1:4000
 const MAX_STEPS = Number(process.env.NEROVA_MAX_STEPS || 10);
 const MODE = 'browser';
 const DEFAULT_CLICK_RADIUS = Number(process.env.AGENT_CLICK_RADIUS || 120);
+const RUNS_ROOT = path.join(USER_DATA_ROOT, 'runs');
 
 async function ensureUserDataDir() {
   await fs.mkdir(BROWSER_PROFILE, { recursive: true }).catch(() => {});
@@ -18,6 +19,87 @@ async function ensureUserDataDir() {
 let sharedContext = null;
 let sharedPage = null;
 let warmExplicit = false;
+let activeRunSession = null;
+
+function formatRunId(date = new Date()) {
+  return date.toISOString().replace(/[:.]/g, '-');
+}
+
+async function startRunSession(meta) {
+  await fs.mkdir(RUNS_ROOT, { recursive: true });
+  const startedAt = new Date();
+  const id = formatRunId(startedAt);
+  const dir = path.join(RUNS_ROOT, id);
+  await fs.mkdir(dir, { recursive: true });
+  const logPath = path.join(dir, 'run.log');
+
+  const writeFile = async (filePath, data) => {
+    await fs.writeFile(filePath, data);
+  };
+
+  const session = {
+    id,
+    dir,
+    logPath,
+    startedAt: startedAt.toISOString(),
+    meta,
+    currentStep: 0,
+    async log(message) {
+      const line = `[${new Date().toISOString()}] ${message}`;
+      await fs.appendFile(logPath, `${line}\n`);
+    },
+    async writeJson(name, data) {
+      const fileName = name.endsWith('.json') ? name : `${name}.json`;
+      await writeFile(path.join(dir, fileName), JSON.stringify(data, null, 2));
+      return fileName;
+    },
+    async writeStepJson(step, name, data) {
+      const prefix = String(step).padStart(2, '0');
+      const fileName = name.endsWith('.json') ? name : `${name}.json`;
+      await writeFile(path.join(dir, `${prefix}_${fileName}`), JSON.stringify(data, null, 2));
+      return `${prefix}_${fileName}`;
+    },
+    async writeStepBuffer(step, name, buffer) {
+      const prefix = String(step).padStart(2, '0');
+      const fileName = path.join(dir, `${prefix}_${name}`);
+      await writeFile(fileName, buffer);
+      return `${prefix}_${name}`;
+    },
+    async updateCompleteHistory(history) {
+      await this.writeJson('complete-history', history);
+    },
+    async finish(status, extra = {}) {
+      await this.log(`Run finished status=${status}`);
+      await this.writeJson('summary', {
+        status,
+        finishedAt: new Date().toISOString(),
+        ...extra
+      });
+    }
+  };
+
+  await session.writeJson('meta', {
+    ...meta,
+    runId: id,
+    startedAt: session.startedAt
+  });
+
+  await session.log(`Run started prompt="${meta.prompt}" brain=${meta.brainUrl}`);
+
+  activeRunSession = session;
+  return session;
+}
+
+function getActiveRunSession() {
+  return activeRunSession;
+}
+
+async function endRunSession(status, extra = {}) {
+  if (activeRunSession) {
+    await activeRunSession.finish(status, extra);
+    activeRunSession = null;
+  }
+}
 
 async function ensureContext({ headlessOverride } = {}) {
   if (sharedContext && !sharedContext.isClosed?.()) {
@@ -96,6 +178,25 @@ async function ensureActivePage(context) {
 
 function normalizeText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function dedupeElements(elements = []) {
+  const map = new Map();
+  for (const element of elements) {
+    if (!element) continue;
+    const key = (() => {
+      if (element.id) return `id:${element.id}`;
+      if (Array.isArray(element.center) && element.center.length === 2) {
+        const [x, y] = element.center;
+        return `pos:${Math.round(x)}:${Math.round(y)}:${normalizeText(element.role)}:${normalizeText(element.name)}`;
+      }
+      return `name:${normalizeText(element.name)}:${normalizeText(element.role)}`;
+    })();
+    if (!map.has(key)) {
+      map.set(key, element);
+    }
+  }
+  return Array.from(map.values());
 }
 
 async function collectViewportElements(page, options = {}) {
@@ -330,7 +431,10 @@ async function postJson(url, body) {
 }
 
 function filterByRadius(elements, center, radius = DEFAULT_CLICK_RADIUS) {
-  if (!center || !Array.isArray(center) || center.length !== 2) return elements || [];
+  if (!center || !Array.isArray(center) || center.length !== 2) {
+    const list = Array.isArray(elements) ? elements : [];
+    return list.slice(0, 200);
+  }
   const [cx, cy] = center;
   const r = Number.isFinite(radius) ? radius : DEFAULT_CLICK_RADIUS;
   const within = (element) => {
@@ -376,19 +480,72 @@ function filterByRadius(elements, center, radius = DEFAULT_CLICK_RADIUS) {
 }
 
 async function resolveClickTarget({
+  page,
   decision,
-  elements = [],
+  devicePixelRatio = 1,
   screenshot,
+  screenshotPath = null,
   prompt,
   brainUrl,
   assistantKey,
-  assistantId
+  assistantId,
+  runContext = null,
+  step = 0
 }) {
   const hints = decision?.target?.hints || {};
   const center = Array.isArray(decision?.target?.center) && decision.target.center.length === 2
-    ? decision.target.center
+    ? decision.target.center.map((value) => {
+        const ratio = Number.isFinite(devicePixelRatio) && devicePixelRatio > 0 ? devicePixelRatio : 1;
+        return value / ratio;
+      })
     : null;
-  const candidates = filterByRadius(elements, center);
+  const rawRadius = Number(decision?.target?.radius);
+  const safeDpr = Number.isFinite(devicePixelRatio) && devicePixelRatio > 0 ? devicePixelRatio : 1;
+  const radius = Number.isFinite(rawRadius)
+    ? rawRadius / safeDpr
+    : DEFAULT_CLICK_RADIUS;
+  console.log('[nerovaagent] target summary:', {
+    type: decision?.target?.type || null,
+    role: decision?.target?.role || null,
+    hasCenter: !!center,
+    hintExact: Array.isArray(hints.text_exact) ? hints.text_exact.length : 0,
+    hintContains: Array.isArray(hints.text_contains) ? hints.text_contains.length : 0,
+    hintRoles: Array.isArray(hints.roles) ? hints.roles.length : 0
+  });
+  if (center) {
+    console.log(`[nerovaagent] decision target center=${center.join(',')} radius=${radius} dpr=${safeDpr}`);
+  } else {
+    console.log(`[nerovaagent] decision target has no center; using default radius=${radius} dpr=${safeDpr}`);
+  }
+  const allElementsRaw = await collectViewportElements(page, { max: 1500 });
+  const allElements = dedupeElements(allElementsRaw);
+  if (runContext) {
+    await runContext.writeStepJson(step, 'step3-hittables', allElements.slice(0, 200));
+  }
+  console.log(`[nerovaagent] STEP3 hittables total=${allElements.length}`);
+  const candidates = filterByRadius(allElements, center, radius);
+  if (center) {
+    console.log(`[nerovaagent] step3 radius center=${center.join(',')} radius=${radius} pool=${candidates.length}`);
+  } else {
+    console.log(`[nerovaagent] step3 radius center=none radius=${radius} pool=${candidates.length}`);
+  }
+  if (candidates.length) {
+    console.log('[nerovaagent] step3 radius sample:', candidates.slice(0, 5).map((item) => ({
+      id: item.id || null,
+      name: item.name,
+      role: item.role,
+      center: item.center,
+      rect: item.rect,
+      hit: item.hit_state
+    })));
+    if (runContext) {
+      await runContext.writeStepJson(step, 'step3-radius', {
+        center,
+        radius,
+        sample: candidates.slice(0, 50)
+      });
+    }
+  }
   const hittableCandidates = candidates.filter((element) => element?.hit_state === 'hittable');
   let preferredPool = hittableCandidates.length ? [...hittableCandidates] : [...candidates];
   const expectedRoles = new Set();
@@ -445,7 +602,8 @@ async function resolveClickTarget({
       debug: {
         hints,
         center,
-        elements: elements.slice(0, 50),
+        radius,
+        elements: allElements.slice(0, 50),
         exactCandidate: exact
       }
     };
@@ -462,6 +620,21 @@ async function resolveClickTarget({
       assistantKey,
       assistantId
     };
+    console.log('[nerovaagent] assistant request candidates:', assistantPayload.elements.map((item) => ({
+      id: item.id || null,
+      name: item.name,
+      role: item.role,
+      center: item.center,
+      hit: item.hit_state
+    })));
+    if (runContext) {
+      const assistantLogPayload = {
+        ...assistantPayload,
+        screenshot: screenshotPath ? `./${screenshotPath}` : 'inline'
+      };
+      if (assistantLogPayload.assistantKey) assistantLogPayload.assistantKey = '***';
+      await runContext.writeStepJson(step, 'assistant-request', assistantLogPayload);
+    }
     try {
       const response = await postJson(`${brainUrl}/v1/brain/assistant`, assistantPayload);
       const parsed = response?.assistant?.parsed || response?.assistant || null;
@@ -472,6 +645,9 @@ async function resolveClickTarget({
         typeof parsed.confidence === 'number' && parsed.confidence >= 0.6
       ) {
         const element = pool.find((el) => el?.id === parsed.candidate_id) || pool[0] || null;
+        if (runContext) {
+          await runContext.writeStepJson(step, 'assistant-response', response.assistant || {});
+        }
         return {
           status: 'assistant',
           source: 'assistant',
@@ -481,10 +657,15 @@ async function resolveClickTarget({
           debug: {
             hints,
             center,
-            elements: elements.slice(0, 50),
+            radius,
+            elements: allElements.slice(0, 50),
             assistantRequest: pool.slice(0, 12)
           }
         };
+      }
+      console.log('[nerovaagent] assistant response (non-click):', response.assistant);
+      if (runContext) {
+        await runContext.writeStepJson(step, 'assistant-response', response.assistant || {});
       }
       return {
         status: 'await_assistance',
@@ -492,73 +673,58 @@ async function resolveClickTarget({
         debug: {
           hints,
           center,
-          elements: elements.slice(0, 50)
+          radius,
+          elements: allElements.slice(0, 50)
         }
       };
     } catch (error) {
       console.warn('[nerovaagent] assistant decision error:', error?.message || error);
+      if (runContext) {
+        await runContext.writeStepJson(step, 'assistant-error', {
+          message: error?.message || String(error)
+        });
+      }
       return {
         status: 'assistant_error',
         error: error?.message || String(error),
         debug: {
           hints,
           center,
-          elements: elements.slice(0, 50)
+          radius,
+          elements: allElements.slice(0, 50)
         }
       };
     }
   };
 
   if (preferredPool.length) {
+    // We now rely on the backend assistant when an exact-match click is unavailable.
     const assistantResult = await tryAssistant(preferredPool);
-    if (assistantResult && assistantResult.status === 'assistant') {
+    if (assistantResult?.status === 'assistant') {
       return assistantResult;
-    }
-
-    const fuzzyTerms = [];
-    if (Array.isArray(hints.text_contains)) fuzzyTerms.push(...hints.text_contains);
-    if (typeof hints.text_partial === 'string') fuzzyTerms.push(hints.text_partial);
-    const normalized = fuzzyTerms.map(normalizeText).filter(Boolean);
-    let pick = preferredPool[0];
-    if (normalized.length) {
-      const match = preferredPool.find((element) => {
-        const name = normalizeText(element?.name);
-        return normalized.some((term) => name.includes(term));
-      });
-      if (match) pick = match;
-    }
-    if (pick) {
-      const centerPoint = Array.isArray(pick.center) && pick.center.length === 2
-        ? pick.center
-        : Array.isArray(pick.rect) && pick.rect.length === 4
-          ? [pick.rect[0] + (pick.rect[2] || 0) / 2, pick.rect[1] + (pick.rect[3] || 0) / 2]
-          : [0, 0];
-      console.log('[nerovaagent] fuzzy pick chosen:', { name: pick.name, role: pick.role, center: centerPoint, rect: pick.rect });
-      return {
-        status: 'ok',
-        source: 'fuzzy',
-        element: pick,
-        center: centerPoint,
-        debug: {
-          hints,
-          center,
-          elements: elements.slice(0, 50)
-        }
-      };
     }
     if (assistantResult) {
-      return assistantResult;
+      console.log(`[nerovaagent] assistant fallback status=${assistantResult.status || 'unknown'}`);
+      if (assistantResult.status === 'await_assistance' || assistantResult.status === 'assistant_error') {
+        return assistantResult;
+      }
     }
   }
 
-  const lastResort = await tryAssistant(elements.slice(0, 12));
-  if (lastResort) return lastResort;
+  const lastResort = await tryAssistant(allElements.slice(0, 12));
+  if (lastResort) {
+    if (lastResort.status !== 'assistant') {
+      console.log(`[nerovaagent] last-resort assistant status=${lastResort.status || 'unknown'}`);
+    }
+    return lastResort;
+  }
   return {
     status: 'await_assistance',
     debug: {
       hints,
       center,
-      elements: elements.slice(0, 50)
+      radius,
+      elements: allElements.slice(0, 50)
     }
   };
 }
@@ -592,7 +758,15 @@ export async function runAgent({
     throw new Error('prompt_required');
   }
 
-  const { context, page, created } = await ensureContext();
+  const runSession = await startRunSession({
+    prompt: prompt.trim(),
+    contextNotes,
+    brainUrl,
+    bootUrl,
+    maxSteps
+  });
+
+  const { context } = await ensureContext();
   try {
     const activePage = await ensureActivePage(context);
     if (bootUrl) {
@@ -602,138 +776,193 @@ export async function runAgent({
     let iterations = 0;
     let completeHistory = [];
     let status = 'in_progress';
+    let runError = null;
 
-    while (iterations < maxSteps) {
-      iterations += 1;
-      await delay(250);
-      const screenshotBuffer = await activePage.screenshot({ fullPage: false }).catch(() => null);
-      if (!screenshotBuffer) {
-        throw new Error('screenshot_failed');
-      }
-      const screenshotB64 = screenshotBuffer.toString('base64');
-      const elements = await collectViewportElements(activePage, { max: 1500 });
-      let currentUrl = '';
-      try {
-        currentUrl = await activePage.url();
-      } catch {}
-
-      const criticPayload = {
-        mode: MODE,
-        prompt: prompt.trim(),
-        contextNotes,
-        screenshot: `data:image/png;base64,${screenshotB64}`,
-        currentUrl,
-        completeHistory,
-        criticKey
-      };
-
-      const criticResponse = await postJson(`${brainUrl.replace(/\/$/, '')}/v1/brain/critic`, criticPayload);
-      const decision = criticResponse?.decision || null;
-      completeHistory = Array.isArray(criticResponse?.completeHistory)
-        ? criticResponse.completeHistory
-        : completeHistory;
-
-      const decisionLabel = decision?.action || 'none';
-      const reason = decision?.reason || decision?.summary || '';
-      console.log(`[nerovaagent] step ${iterations} action=${decisionLabel}${reason ? ` :: ${reason}` : ''}`);
-
-      if (!decision || !decision.action) {
-        status = 'resend';
+    try {
+      while (iterations < maxSteps) {
+        iterations += 1;
+        runSession.currentStep = iterations;
         await delay(250);
-        continue;
-      }
+        const screenshotBuffer = await activePage.screenshot({ fullPage: false }).catch(() => null);
+        if (!screenshotBuffer) {
+          throw new Error('screenshot_failed');
+        }
+        const screenshotB64 = screenshotBuffer.toString('base64');
+        const screenshotPath = await runSession.writeStepBuffer(iterations, 'critic.png', screenshotBuffer);
+        let devicePixelRatio = 1;
+        try {
+          const ratio = await activePage.evaluate(() => window.devicePixelRatio || 1);
+          if (Number.isFinite(ratio) && ratio > 0) devicePixelRatio = ratio;
+        } catch {}
+        let currentUrl = '';
+        try {
+          currentUrl = await activePage.url();
+        } catch {}
 
-      if (decision.action === 'stop') {
-        status = 'stop';
-        break;
-      }
+        const criticPayload = {
+          mode: MODE,
+          prompt: prompt.trim(),
+          contextNotes,
+          screenshot: `data:image/png;base64,${screenshotB64}`,
+          currentUrl,
+          completeHistory,
+          criticKey
+        };
+        const criticLogPayload = {
+          ...criticPayload,
+          screenshot: `./${screenshotPath}`
+        };
+        if (criticLogPayload.criticKey) criticLogPayload.criticKey = '***';
+        await runSession.writeStepJson(iterations, 'critic-input', criticLogPayload);
+        const logPayload = {
+          ...criticPayload,
+          screenshot: `base64(${screenshotB64.length} chars)`
+        };
+        if (logPayload.criticKey) logPayload.criticKey = '***';
+        console.log('[nerovaagent] critic input:', logPayload);
 
-      if (decision.action === 'resend') {
-        status = 'resend';
-        await delay(300);
-        continue;
-      }
-
-      if (decision.action === 'navigate' && decision.url) {
-        await executeAction(activePage, {
-          type: 'navigate',
-          url: decision.url,
-          reason: decision.reason || null
+        const criticResponse = await postJson(`${brainUrl.replace(/\/$/, '')}/v1/brain/critic`, criticPayload);
+        const decision = criticResponse?.decision || null;
+        completeHistory = Array.isArray(criticResponse?.completeHistory)
+          ? criticResponse.completeHistory
+          : completeHistory;
+        await runSession.writeStepJson(iterations, 'critic-output', criticResponse || {});
+        await runSession.updateCompleteHistory(completeHistory);
+        console.log('[nerovaagent] critic output:', {
+          decision,
+          completeHistory,
+          raw: criticResponse?.critic?.raw || null,
+          confidence: decision?.confidence ?? null
         });
-        status = 'continue';
-        continue;
-      }
 
-      if (decision.action === 'scroll') {
-        const dir = decision?.scroll?.direction === 'up' ? 'up' : 'down';
-        await executeAction(activePage, {
-          type: 'scroll',
-          direction: dir,
-          amount: decision?.scroll?.amount || decision?.scroll?.pages || null,
-          reason: decision.reason || null
-        });
-        status = 'continue';
-        continue;
-      }
+        const decisionLabel = decision?.action || 'none';
+        const reason = decision?.reason || decision?.summary || '';
+        console.log(`[nerovaagent] step ${iterations} action=${decisionLabel}${reason ? ` :: ${reason}` : ''}`);
+        await runSession.log(`step ${iterations} action=${decisionLabel}${reason ? ` :: ${reason}` : ''}`);
 
-      if (decision.action === 'back') {
-        await executeAction(activePage, { type: 'back' });
-        status = 'continue';
-        continue;
-      }
+        if (!decision || !decision.action) {
+          status = 'resend';
+          await runSession.log('critic returned no action, resend');
+          await delay(250);
+          continue;
+        }
 
-      if (decision.action === 'click_by_text_role' || decision.action === 'accept') {
-       const selection = await resolveClickTarget({
-         decision,
-         elements,
-         screenshot: screenshotB64,
-         prompt: prompt.trim(),
-         brainUrl: brainUrl.replace(/\/$/, ''),
-         assistantKey,
-         assistantId
-       });
+        if (decision.action === 'stop') {
+          status = 'stop';
+          await runSession.log('stop requested by critic');
+          break;
+        }
 
-        if (selection.status === 'ok' || selection.status === 'assistant') {
-          const target = {
-            id: selection.element?.id || decision?.target?.id || null,
-            name: selection.element?.name || decision?.target?.hints?.text_partial || null,
-            role: selection.element?.role || decision?.target?.role || null,
-            content: decision?.target?.content || null,
-            clear: decision?.target?.clear || false,
-            submit: decision?.target?.submit || false
-          };
-          console.log(`[nerovaagent] click target name=${target.name || 'unknown'} source=${selection.source || selection.status} center=${Array.isArray(selection.center) ? selection.center.join(',') : 'n/a'}`);
+        if (decision.action === 'resend') {
+          status = 'resend';
+          await runSession.log('critic requested resend');
+          await delay(300);
+          continue;
+        }
+
+        if (decision.action === 'navigate' && decision.url) {
           await executeAction(activePage, {
-            type: 'click',
-            center: selection.center,
-            target,
-            source: selection.source || selection.status
+            type: 'navigate',
+            url: decision.url,
+            reason: decision.reason || null
           });
+          await runSession.log(`navigate -> ${decision.url}`);
           status = 'continue';
           continue;
         }
 
-        if (selection.status === 'await_assistance') {
-          console.warn('[nerovaagent] backend awaiting additional assistance; pausing iteration.');
-          status = 'await_assistance';
-          await delay(800);
+        if (decision.action === 'scroll') {
+          const dir = decision?.scroll?.direction === 'up' ? 'up' : 'down';
+          await executeAction(activePage, {
+            type: 'scroll',
+            direction: dir,
+            amount: decision?.scroll?.amount || decision?.scroll?.pages || null,
+            reason: decision.reason || null
+          });
+          await runSession.log(`scroll direction=${dir} amount=${decision?.scroll?.amount || decision?.scroll?.pages || ''}`);
+          status = 'continue';
           continue;
         }
 
-        console.warn(`[nerovaagent] click target not resolved (${selection.status || 'unknown'}).`);
+        if (decision.action === 'back') {
+          await executeAction(activePage, { type: 'back' });
+          await runSession.log('back');
+          status = 'continue';
+          continue;
+        }
+
+        if (decision.action === 'click_by_text_role' || decision.action === 'accept') {
+          const selection = await resolveClickTarget({
+            page: activePage,
+            devicePixelRatio,
+            decision,
+            screenshot: screenshotB64,
+            screenshotPath,
+            prompt: prompt.trim(),
+            brainUrl: brainUrl.replace(/\/$/, ''),
+            assistantKey,
+            assistantId,
+            runContext: runSession,
+            step: iterations
+          });
+
+          if (selection.status === 'ok' || selection.status === 'assistant') {
+            const target = {
+              id: selection.element?.id || decision?.target?.id || null,
+              name: selection.element?.name || decision?.target?.hints?.text_partial || null,
+              role: selection.element?.role || decision?.target?.role || null,
+              content: decision?.target?.content || null,
+              clear: decision?.target?.clear || false,
+              submit: decision?.target?.submit || false
+            };
+            console.log(`[nerovaagent] click target name=${target.name || 'unknown'} source=${selection.source || selection.status} center=${Array.isArray(selection.center) ? selection.center.join(',') : 'n/a'}`);
+            await runSession.log(`click name=${target.name || 'unknown'} source=${selection.source || selection.status} center=${Array.isArray(selection.center) ? selection.center.join(',') : 'n/a'}`);
+            await runSession.writeStepJson(iterations, 'click-selection', {
+              target,
+              selection
+            });
+            await executeAction(activePage, {
+              type: 'click',
+              center: selection.center,
+              target,
+              source: selection.source || selection.status
+            });
+            status = 'continue';
+            continue;
+          }
+
+          if (selection.status === 'await_assistance') {
+            console.warn('[nerovaagent] backend awaiting additional assistance; pausing iteration.');
+            await runSession.log('awaiting additional assistance');
+            status = 'await_assistance';
+            await delay(800);
+            continue;
+          }
+
+          console.warn(`[nerovaagent] click target not resolved (${selection.status || 'unknown'}).`);
+          await runSession.log(`click target unresolved status=${selection.status || 'unknown'}`);
+          status = 'halt';
+          break;
+        }
+
+        console.warn(`[nerovaagent] unsupported action ${decision.action}`);
+        await runSession.log(`unsupported action ${decision.action}`);
         status = 'halt';
         break;
       }
-
-      console.warn(`[nerovaagent] unsupported action ${decision.action}`);
-      status = 'halt';
-      break;
+    } catch (error) {
+      runError = error;
+      status = 'error';
+      await runSession.log(`error: ${error?.message || error}`);
+      throw error;
     }
 
     if (status !== 'stop') {
       console.warn(`[nerovaagent] run finished with status ${status}.`);
+      await runSession.log(`run finished with status ${status}`);
     } else {
       console.log(`[nerovaagent] run completed after ${iterations} iterations.`);
+      await runSession.log(`run completed after ${iterations} iterations`);
     }
 
     return { iterations, status, completeHistory };
@@ -745,6 +974,9 @@ export async function runAgent({
       sharedPage = null;
     } else {
       sharedContext = context;
+    }
+    if (runSession) {
+      await endRunSession(runError ? 'error' : status, runError ? { error: runError?.message || String(runError) } : {});
     }
   }
 }

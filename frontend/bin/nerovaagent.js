@@ -1,12 +1,18 @@
 #!/usr/bin/env node
-import { readFileSync } from 'fs';
+import fs from 'fs';
+import fsPromises from 'fs/promises';
+import os from 'os';
+import path from 'path';
 import readline from 'readline';
 import { runAgent, warmPlaywright, shutdownContext } from '../src/runner.js';
+
+const RUNS_ROOT = path.join(os.homedir(), '.nerovaagent', 'runs');
 
 function printHelp() {
   console.log(`nerovaagent commands:
   start <prompt|string>             Run the agent workflow with the given prompt
   playwright-launch                 Warm the local Playwright runtime
+  logs [runId] [--follow]           Show run logs (defaults to latest)
     --prompt-file <path>            Read the prompt from a file
     --context <string>              Additional context notes for the run
     --context-file <path>           Read context notes from a file
@@ -67,7 +73,7 @@ function parseArgs(argv) {
 
 function loadFileSafe(filePath) {
   try {
-    return readFileSync(filePath, 'utf8');
+    return fs.readFileSync(filePath, 'utf8');
   } catch (err) {
     console.error(`Failed to read ${filePath}:`, err?.message || err);
     process.exit(1);
@@ -192,6 +198,109 @@ async function handlePlaywrightLaunch(argv) {
   rl.prompt();
 }
 
+async function listRuns() {
+  try {
+    const entries = await fsPromises.readdir(RUNS_ROOT, { withFileTypes: true });
+    const details = await Promise.all(entries
+      .filter((entry) => entry.isDirectory())
+      .map(async (entry) => {
+        const dir = path.join(RUNS_ROOT, entry.name);
+        const stat = await fsPromises.stat(dir);
+        return { name: entry.name, dir, mtime: stat.mtimeMs };
+      }));
+    return details.sort((a, b) => b.mtime - a.mtime);
+  } catch (err) {
+    if (err?.code === 'ENOENT') return [];
+    throw err;
+  }
+}
+
+async function tailFile(filePath, follow = false) {
+  const handle = await fsPromises.open(filePath, 'r');
+  let position = 0;
+  const pump = async () => {
+    const { size } = await handle.stat();
+    if (size > position) {
+      const length = size - position;
+      const buffer = Buffer.alloc(length);
+      await handle.read(buffer, 0, length, position);
+      position = size;
+      process.stdout.write(buffer.toString('utf8'));
+    }
+  };
+  await pump();
+
+  if (!follow) {
+    await handle.close();
+    return;
+  }
+
+  await new Promise((resolve) => {
+    const watcher = fs.watch(filePath, async (eventType) => {
+      if (eventType === 'change') {
+        try {
+          await pump();
+        } catch (err) {
+          console.error('log tail error:', err?.message || err);
+        }
+      }
+    });
+
+    const cleanup = async () => {
+      watcher.close();
+      await handle.close().catch(() => {});
+      process.off('SIGINT', cleanup);
+      resolve();
+    };
+
+    process.on('SIGINT', cleanup);
+  });
+}
+
+async function handleLogs(argv) {
+  let runId = null;
+  let follow = false;
+  for (let i = 0; i < argv.length; i += 1) {
+    const token = argv[i];
+    switch (token) {
+      case '--id':
+        if (argv[i + 1]) { runId = argv[i + 1]; i += 1; }
+        break;
+      case '--follow':
+      case '-f':
+        follow = true;
+        break;
+      default:
+        if (!runId) runId = token;
+        break;
+    }
+  }
+
+  const runs = await listRuns();
+  if (!runId && runs.length) {
+    runId = runs[0].name;
+  }
+  if (!runId) {
+    console.error('[nerovaagent] no runs found. Start a run first.');
+    return;
+  }
+  const dir = path.join(RUNS_ROOT, runId);
+  const logPath = path.join(dir, 'run.log');
+  try {
+    await fsPromises.access(logPath);
+  } catch (err) {
+    console.error(`[nerovaagent] log not found for run ${runId} (${logPath})`);
+    if (!runs.length) {
+      console.error('[nerovaagent] run directory is empty.');
+    }
+    return;
+  }
+
+  console.log(`[nerovaagent] log for run ${runId} (${follow ? 'follow' : 'static'})`);
+  console.log(`[nerovaagent] path: ${logPath}`);
+  await tailFile(logPath, follow);
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const command = args[0];
@@ -205,6 +314,9 @@ async function main() {
       break;
     case 'playwright-launch':
       await handlePlaywrightLaunch(args.slice(1));
+      break;
+    case 'logs':
+      await handleLogs(args.slice(1));
       break;
     default:
       console.error(`Unknown command: ${command}`);

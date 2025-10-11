@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from 'express';
 import { runCritic, runAssistant } from './brain.js';
 
