@@ -103,6 +103,21 @@ Goal-first rule:
 - Choose the single action that most directly advances the prompt’s end goal NOW; avoid redundant actions (e.g., do not search for something already visible to click).`;
 }
 
+export function buildBootstrapSystemPrompt() {
+  return `SYSTEM (URL Bootstrap Critic)
+
+You are the URL Bootstrap Critic. Decide the single best initial URL to open NOW to advance toward the final goal.
+
+Rules:
+- Output ONLY a single JSON object (no prose, no markdown, no code fences).
+- Allowed actions (choose ONE): navigate | proceed | resend
+- If action=navigate: url must be HTTPS, canonical/official page (no shorteners). Remove tracking query unless required.
+- If action=proceed: current page is already correct to start the task.
+- If action=resend: the page appears in transition/blank; the runtime will retry this same prompt with a fresh screenshot.
+- Include a short reason and numeric confidence 0..1.
+- REQUIRED: include top-level complete (array). Use [] if nothing was completed; otherwise include one concise string that reflects the outcome, e.g., "navigated to https://example.com" for navigate, or "proceed" for proceed.`;
+}
+
 export async function callCritic({
   prompt,
   screenshot,
@@ -110,39 +125,44 @@ export async function callCritic({
   contextNotes = '',
   completeHistory = [],
   openaiApiKey = null,
-  model = process.env.CRITIC_MODEL || 'gpt-5'
+  model = process.env.CRITIC_MODEL || 'gpt-5',
+  systemPrompt: systemPromptOverride = null,
+  userPayload: explicitUserPayload = null
 }) {
   assert(prompt && prompt.trim(), 'prompt_required');
   assert(screenshot && screenshot.length > 10, 'screenshot_required');
   const apiKey = resolveKey(openaiApiKey, TEST_CRITIC_KEY);
   if (!apiKey) throw new Error('critic_api_key_missing');
 
-  const systemPrompt = buildCriticSystemPrompt();
-  const contextActive = !!(contextNotes && contextNotes.trim());
-  const plannedStep = {
-    id: 'Step 2',
-    type: 'click_by_candidates',
-    hints: {},
-    content: ''
-  };
-  const userPayload = {
-    goal: {
-      original_prompt: prompt,
-      new_context: contextActive ? contextNotes : ''
-    },
-    context: {
-      current_url: currentUrl,
-      context_active: contextActive,
-      context_step: contextActive ? 0 : 0
-    },
-    plan_window: {
-      planned_step: plannedStep,
-      next_steps: []
-    },
-    complete_history: Array.isArray(completeHistory)
-      ? completeHistory.slice(-20)
-      : []
-  };
+  const systemPrompt = systemPromptOverride || buildCriticSystemPrompt();
+  let userPayload = explicitUserPayload;
+  if (!userPayload) {
+    const contextActive = !!(contextNotes && contextNotes.trim());
+    const plannedStep = {
+      id: 'Step 2',
+      type: 'click_by_candidates',
+      hints: {},
+      content: ''
+    };
+    userPayload = {
+      goal: {
+        original_prompt: prompt,
+        new_context: contextActive ? contextNotes : ''
+      },
+      context: {
+        current_url: currentUrl,
+        context_active: contextActive,
+        context_step: contextActive ? 0 : 0
+      },
+      plan_window: {
+        planned_step: plannedStep,
+        next_steps: []
+      },
+      complete_history: Array.isArray(completeHistory)
+        ? completeHistory.slice(-20)
+        : []
+    };
+  }
 
   const chosenModel = model || 'gpt-5';
   const body = {

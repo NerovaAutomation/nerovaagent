@@ -487,6 +487,7 @@ async function resolveClickTarget({
   screenshotPath = null,
   prompt,
   brainUrl,
+  sessionId = null,
   assistantKey,
   assistantId,
   runContext = null,
@@ -617,6 +618,7 @@ async function resolveClickTarget({
       target: decision?.target || null,
       elements: pool.slice(0, 12),
       screenshot: `data:image/png;base64,${screenshot}`,
+      sessionId,
       assistantKey,
       assistantId
     };
@@ -758,54 +760,140 @@ export async function runAgent({
     throw new Error('prompt_required');
   }
 
+  const basePrompt = prompt.trim();
+  const contextText = typeof contextNotes === 'string' ? contextNotes.trim() : '';
+  const effectivePrompt = contextText
+    ? `${basePrompt}\n\nContext:\n${contextText}`
+    : basePrompt;
+
   const runSession = await startRunSession({
-    prompt: prompt.trim(),
+    prompt: basePrompt,
     contextNotes,
     brainUrl,
     bootUrl,
     maxSteps
   });
 
+  const normalizedBrainUrl = brainUrl.replace(/\/$/, '');
+
   const { context } = await ensureContext();
   try {
     const activePage = await ensureActivePage(context);
     if (bootUrl) {
       await activePage.goto(bootUrl, { waitUntil: 'load' }).catch(() => {});
+      await delay(800);
     }
 
+    const captureFrame = async (step, imageName = 'critic.png') => {
+      const buffer = await activePage.screenshot({ fullPage: false }).catch(() => null);
+      if (!buffer) {
+        throw new Error('screenshot_failed');
+      }
+      const pathName = await runSession.writeStepBuffer(step, imageName, buffer);
+      let devicePixelRatio = 1;
+      try {
+        const ratio = await activePage.evaluate(() => window.devicePixelRatio || 1);
+        if (Number.isFinite(ratio) && ratio > 0) {
+          devicePixelRatio = ratio;
+        }
+      } catch {}
+      return {
+        screenshotB64: buffer.toString('base64'),
+        screenshotPath: pathName,
+        devicePixelRatio
+      };
+    };
+
+    let sessionId = null;
     let iterations = 0;
     let completeHistory = [];
     let status = 'in_progress';
     let runError = null;
 
+    const runBootstrapPhase = async () => {
+      for (let attempt = 1; attempt <= 5; attempt += 1) {
+        await delay(200);
+        const label = `bootstrap-${String(attempt).padStart(2, '0')}`;
+        const { screenshotB64, screenshotPath } = await captureFrame(0, `${label}.png`);
+        const payload = {
+          mode: MODE,
+          prompt: effectivePrompt,
+          screenshot: screenshotB64,
+          sessionId,
+          criticKey
+        };
+        const logPayload = {
+          ...payload,
+          screenshot: `./${screenshotPath}`
+        };
+        if (logPayload.criticKey) logPayload.criticKey = '***';
+        await runSession.writeStepJson(0, `${label}-input`, logPayload);
+
+        const consolePayload = {
+          ...payload,
+          screenshot: `base64(${screenshotB64.length} chars)`
+        };
+        if (consolePayload.criticKey) consolePayload.criticKey = '***';
+        console.log('[nerovaagent] bootstrap input:', consolePayload);
+
+        const response = await postJson(`${normalizedBrainUrl}/v1/brain/bootstrap`, payload);
+        sessionId = response?.sessionId || sessionId;
+        if (Array.isArray(response?.completeHistory)) {
+          completeHistory = response.completeHistory;
+        }
+        await runSession.updateCompleteHistory(completeHistory);
+        await runSession.writeStepJson(0, `${label}-output`, response || {});
+        const decision = response?.decision || null;
+        console.log('[nerovaagent] bootstrap output:', {
+          action: decision?.action || null,
+          reason: decision?.reason || null,
+          url: decision?.url || null,
+          sessionId,
+          completeHistory
+        });
+
+        if (!decision) {
+          await runSession.log('bootstrap: no decision, retrying');
+          await delay(400);
+          continue;
+        }
+
+        if (decision.action === 'resend') {
+          await runSession.log('bootstrap requested resend');
+          await delay(400);
+          continue;
+        }
+
+        if (decision.action === 'navigate' && decision.url) {
+          await runSession.log(`bootstrap navigate -> ${decision.url}`);
+          await executeAction(activePage, {
+            type: 'navigate',
+            url: decision.url,
+            reason: decision.reason || null
+          });
+          await delay(800);
+          break;
+        }
+
+        await runSession.log(`bootstrap action=${decision.action || 'proceed'}`);
+        break;
+      }
+    };
+
+    await runBootstrapPhase();
+
     try {
       while (iterations < maxSteps) {
         iterations += 1;
         runSession.currentStep = iterations;
-        await delay(250);
-        const screenshotBuffer = await activePage.screenshot({ fullPage: false }).catch(() => null);
-        if (!screenshotBuffer) {
-          throw new Error('screenshot_failed');
-        }
-        const screenshotB64 = screenshotBuffer.toString('base64');
-        const screenshotPath = await runSession.writeStepBuffer(iterations, 'critic.png', screenshotBuffer);
-        let devicePixelRatio = 1;
-        try {
-          const ratio = await activePage.evaluate(() => window.devicePixelRatio || 1);
-          if (Number.isFinite(ratio) && ratio > 0) devicePixelRatio = ratio;
-        } catch {}
-        let currentUrl = '';
-        try {
-          currentUrl = await activePage.url();
-        } catch {}
+        await delay(200);
 
+        const { screenshotB64, screenshotPath, devicePixelRatio } = await captureFrame(iterations);
         const criticPayload = {
           mode: MODE,
-          prompt: prompt.trim(),
-          contextNotes,
-          screenshot: `data:image/png;base64,${screenshotB64}`,
-          currentUrl,
-          completeHistory,
+          prompt: effectivePrompt,
+          screenshot: screenshotB64,
+          sessionId,
           criticKey
         };
         const criticLogPayload = {
@@ -814,31 +902,34 @@ export async function runAgent({
         };
         if (criticLogPayload.criticKey) criticLogPayload.criticKey = '***';
         await runSession.writeStepJson(iterations, 'critic-input', criticLogPayload);
-        const logPayload = {
+
+        const consolePayload = {
           ...criticPayload,
           screenshot: `base64(${screenshotB64.length} chars)`
         };
-        if (logPayload.criticKey) logPayload.criticKey = '***';
-        console.log('[nerovaagent] critic input:', logPayload);
+        if (consolePayload.criticKey) consolePayload.criticKey = '***';
+        console.log('[nerovaagent] critic input:', consolePayload);
 
-        const criticResponse = await postJson(`${brainUrl.replace(/\/$/, '')}/v1/brain/critic`, criticPayload);
-        const decision = criticResponse?.decision || null;
-        completeHistory = Array.isArray(criticResponse?.completeHistory)
-          ? criticResponse.completeHistory
-          : completeHistory;
-        await runSession.writeStepJson(iterations, 'critic-output', criticResponse || {});
+        const criticResponse = await postJson(`${normalizedBrainUrl}/v1/brain/critic`, criticPayload);
+        sessionId = criticResponse?.sessionId || sessionId;
+        if (Array.isArray(criticResponse?.completeHistory)) {
+          completeHistory = criticResponse.completeHistory;
+        }
         await runSession.updateCompleteHistory(completeHistory);
+        await runSession.writeStepJson(iterations, 'critic-output', criticResponse || {});
+        const decision = criticResponse?.decision || null;
         console.log('[nerovaagent] critic output:', {
           decision,
           completeHistory,
+          sessionId,
           raw: criticResponse?.critic?.raw || null,
           confidence: decision?.confidence ?? null
         });
 
         const decisionLabel = decision?.action || 'none';
         const reason = decision?.reason || decision?.summary || '';
-        console.log(`[nerovaagent] step ${iterations} action=${decisionLabel}${reason ? ` :: ${reason}` : ''}`);
         await runSession.log(`step ${iterations} action=${decisionLabel}${reason ? ` :: ${reason}` : ''}`);
+        console.log(`[nerovaagent] step ${iterations} action=${decisionLabel}${reason ? ` :: ${reason}` : ''}`);
 
         if (!decision || !decision.action) {
           status = 'resend';
@@ -898,8 +989,9 @@ export async function runAgent({
             decision,
             screenshot: screenshotB64,
             screenshotPath,
-            prompt: prompt.trim(),
-            brainUrl: brainUrl.replace(/\/$/, ''),
+            prompt: effectivePrompt,
+            brainUrl: normalizedBrainUrl,
+            sessionId,
             assistantKey,
             assistantId,
             runContext: runSession,

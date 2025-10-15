@@ -1,12 +1,21 @@
 import 'dotenv/config';
 import express from 'express';
-import { runCritic, runAssistant } from './brain.js';
+import { runBootstrap, runCritic, runAssistant } from './brain.js';
 
 const app = express();
 app.use(express.json({ limit: '8mb' }));
 
 app.get('/healthz', (_req, res) => {
   res.json({ ok: true, status: 'ready' });
+});
+
+app.post('/v1/brain/bootstrap', async (req, res) => {
+  try {
+    const result = await runBootstrap(req.body || {});
+    res.json(result);
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error?.message || String(error) });
+  }
 });
 
 app.post('/v1/brain/critic', async (req, res) => {

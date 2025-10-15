@@ -1,6 +1,42 @@
-import { callCritic, callAssistantDecision } from './llm.js';
+import crypto from 'node:crypto';
+import { callCritic, callAssistantDecision, buildBootstrapSystemPrompt } from './llm.js';
 
 const MODES = new Set(['browser']);
+
+const sessions = new Map();
+
+function touchSession(session) {
+  if (session) {
+    session.updatedAt = Date.now();
+  }
+  return session;
+}
+
+function createSession(initial = {}) {
+  const session = {
+    id: crypto.randomUUID(),
+    completeHistory: [],
+    contextNotes: '',
+    currentUrl: '',
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    ...initial
+  };
+  sessions.set(session.id, session);
+  return session;
+}
+
+function getSession(sessionId) {
+  if (!sessionId) return null;
+  const session = sessions.get(sessionId) || null;
+  return touchSession(session);
+}
+
+function ensureSession(sessionId) {
+  const existing = getSession(sessionId);
+  if (existing) return existing;
+  return createSession();
+}
 
 function assertMode(mode) {
   const value = (mode || 'browser').toLowerCase();
@@ -41,13 +77,11 @@ export function extractCompletes(decision, store = []) {
   return current;
 }
 
-export async function runCritic({
+export async function runBootstrap({
   mode = 'browser',
   prompt,
   screenshot,
-  currentUrl = '',
-  contextNotes = '',
-  completeHistory = [],
+  sessionId = null,
   criticKey = null,
   model = undefined
 }) {
@@ -60,24 +94,85 @@ export async function runCritic({
     throw new Error('screenshot_required');
   }
 
+  const session = ensureSession(sessionId);
+  const userPayload = {
+    goal: {
+      original_prompt: prompt.trim()
+    },
+    context: {
+      current_url: session.currentUrl || ''
+    },
+    complete_history: Array.isArray(session.completeHistory)
+      ? session.completeHistory.slice(-20)
+      : []
+  };
+
   const critic = await callCritic({
     prompt: prompt.trim(),
     screenshot: cleanScreenshot,
-    currentUrl,
-    contextNotes,
-    completeHistory,
     openaiApiKey: criticKey,
-    model
+    model,
+    systemPrompt: buildBootstrapSystemPrompt(),
+    userPayload
   });
+
   const decision = critic?.parsed || null;
-  const history = extractCompletes(decision, completeHistory);
+  session.completeHistory = extractCompletes(decision, session.completeHistory);
+  if (decision?.action === 'navigate' && typeof decision.url === 'string') {
+    session.currentUrl = decision.url.trim();
+  }
 
   return {
     ok: true,
     mode: normalizedMode,
+    sessionId: session.id,
     decision,
     critic,
-    completeHistory: history
+    completeHistory: session.completeHistory
+  };
+}
+
+export async function runCritic({
+  mode = 'browser',
+  prompt,
+  screenshot,
+  sessionId = null,
+  criticKey = null,
+  model = undefined
+}) {
+  const normalizedMode = assertMode(mode);
+  const cleanScreenshot = sanitizeScreenshot(screenshot);
+  if (!prompt || !prompt.trim()) {
+    throw new Error('prompt_required');
+  }
+  if (!cleanScreenshot) {
+    throw new Error('screenshot_required');
+  }
+
+  const session = ensureSession(sessionId);
+
+  const critic = await callCritic({
+    prompt: prompt.trim(),
+    screenshot: cleanScreenshot,
+    currentUrl: session.currentUrl || '',
+    contextNotes: session.contextNotes || '',
+    completeHistory: session.completeHistory,
+    openaiApiKey: criticKey,
+    model
+  });
+  const decision = critic?.parsed || null;
+  session.completeHistory = extractCompletes(decision, session.completeHistory);
+  if (decision?.action === 'navigate' && typeof decision.url === 'string') {
+    session.currentUrl = decision.url.trim();
+  }
+
+  return {
+    ok: true,
+    mode: normalizedMode,
+    sessionId: session.id,
+    decision,
+    critic,
+    completeHistory: session.completeHistory
   };
 }
 
@@ -115,6 +210,7 @@ export async function runAssistant({
 }
 
 export default {
+  runBootstrap,
   runCritic,
   runAssistant,
   extractCompletes
