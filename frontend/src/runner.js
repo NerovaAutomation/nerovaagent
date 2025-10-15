@@ -777,14 +777,21 @@ export async function runAgent({
   const normalizedBrainUrl = brainUrl.replace(/\/$/, '');
 
   const { context } = await ensureContext();
+  let activePage = null;
+  let captureFrame = null;
+  let sessionId = null;
+  let iterations = 0;
+  let completeHistory = [];
+  let status = 'in_progress';
+  let runError = null;
   try {
-    const activePage = await ensureActivePage(context);
+    activePage = await ensureActivePage(context);
     if (bootUrl) {
       await activePage.goto(bootUrl, { waitUntil: 'load' }).catch(() => {});
       await delay(800);
     }
 
-    const captureFrame = async (step, imageName = 'critic.png') => {
+    captureFrame = async (step, imageName = 'critic.png') => {
       const buffer = await activePage.screenshot({ fullPage: false }).catch(() => null);
       if (!buffer) {
         throw new Error('screenshot_failed');
@@ -803,12 +810,6 @@ export async function runAgent({
         devicePixelRatio
       };
     };
-
-    let sessionId = null;
-    let iterations = 0;
-    let completeHistory = [];
-    let status = 'in_progress';
-    let runError = null;
 
     const runBootstrapPhase = async () => {
       for (let attempt = 1; attempt <= 5; attempt += 1) {
@@ -1045,7 +1046,9 @@ export async function runAgent({
     } catch (error) {
       runError = error;
       status = 'error';
-      await runSession.log(`error: ${error?.message || error}`);
+      const message = error?.stack || error?.message || String(error);
+      console.error('[nerovaagent] iteration loop failed:', message);
+      await runSession.log(`error: ${message}`);
       throw error;
     }
 
