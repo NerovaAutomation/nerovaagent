@@ -376,14 +376,9 @@ async function executeAction(page, action = {}) {
       await page.bringToFront().catch(() => {});
       let clicked = false;
       if (Array.isArray(action.center) && action.center.length === 2) {
-        try {
-          const viewport = await page.viewportSize();
-          console.log(`[nerovaagent] viewport=${viewport?.width || 'n/a'}x${viewport?.height || 'n/a'} center=${action.center.join(',')}`);
-        } catch {}
         const [x, y] = action.center.map((value) => Math.round(value));
         await page.mouse.click(x, y, { button: 'left', clickCount: 1 });
         clicked = true;
-        console.log(`[nerovaagent] click coordinates (${x}, ${y})`);
       } else {
         console.warn('[nerovaagent] click action skipped (no coordinates)');
         break;
@@ -1035,7 +1030,8 @@ export async function runAgent({
         const decisionLabel = decision?.action || 'none';
         const reason = decision?.reason || decision?.summary || '';
         await runSession.log(`step ${iterations} action=${decisionLabel}${reason ? ` :: ${reason}` : ''}`);
-        console.log(`[nerovaagent] step ${iterations} action=${decisionLabel}${reason ? ` :: ${reason}` : ''}`);
+        const historySummary = completeHistory.length ? completeHistory.join(' -> ') : '(none)';
+        console.log(`[nerovaagent] complete history: ${historySummary}`);
 
         if (!decision || !decision.action) {
           status = 'resend';
@@ -1163,7 +1159,6 @@ export async function runAgent({
           }
 
           if (selection.status === 'await_assistance') {
-            console.warn('[nerovaagent] backend awaiting additional assistance; pausing iteration.');
             await runSession.log('awaiting additional assistance');
             await runSession.logWorkflow({
               stage: 'await_assistance',
@@ -1200,10 +1195,8 @@ export async function runAgent({
     }
 
     if (status !== 'stop') {
-      console.warn(`[nerovaagent] run finished with status ${status}.`);
       await runSession.log(`run finished with status ${status}`);
     } else {
-      console.log(`[nerovaagent] run completed after ${iterations} iterations.`);
       await runSession.log(`run completed after ${iterations} iterations`);
     }
 
