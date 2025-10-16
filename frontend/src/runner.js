@@ -1031,7 +1031,16 @@ export async function runAgent({
         const reason = decision?.reason || decision?.summary || '';
         await runSession.log(`step ${iterations} action=${decisionLabel}${reason ? ` :: ${reason}` : ''}`);
         const historySummary = completeHistory.length ? completeHistory.join(' -> ') : '(none)';
-        console.log(`[nerovaagent] complete history: ${historySummary}`);
+        if (!historySummary || historySummary === '(none)') {
+          console.log('[nerovaagent] complete history: (none)');
+        } else {
+          const latest = completeHistory[completeHistory.length - 1];
+          if (typeof latest === 'string' && latest.trim()) {
+            console.log(`[nerovaagent] + ${latest.trim()}`);
+          } else {
+            console.log(`[nerovaagent] complete history: ${historySummary}`);
+          }
+        }
 
         if (!decision || !decision.action) {
           status = 'resend';
