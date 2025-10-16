@@ -12,7 +12,7 @@ function printHelp() {
   console.log(`nerovaagent commands:
   start <prompt|string>             Run the agent workflow with the given prompt
   playwright-launch                 Warm the local Playwright runtime
-  logs [runId] [--follow]           Show run logs (defaults to latest)
+  logs [runId] [--follow] [--workflow]  Show run logs (use --workflow for action feed)
     --prompt-file <path>            Read the prompt from a file
     --context <string>              Additional context notes for the run
     --context-file <path>           Read context notes from a file
@@ -94,6 +94,125 @@ function tokenizeArgs(line) {
     }
   }
   return tokens;
+}
+
+function formatWorkflowLine(line) {
+  let event;
+  try {
+    event = JSON.parse(line);
+  } catch {
+    return line.trim();
+  }
+  const parts = [];
+  if (event.timestamp) parts.push(new Date(event.timestamp).toISOString());
+  if (Number.isFinite(event.step)) parts.push(`step ${event.step}`);
+  if (event.stage) parts.push(event.stage);
+
+  const decisionSummary = (decision) => {
+    if (!decision) return 'decision: none';
+    const items = [`action=${decision.action || 'none'}`];
+    if (typeof decision.reason === 'string' && decision.reason.trim()) items.push(`reason=${decision.reason.trim()}`);
+    if (typeof decision.confidence === 'number') items.push(`confidence=${decision.confidence}`);
+    return items.join(' ');
+  };
+
+  let detail = '';
+  switch (event.stage) {
+    case 'run_start':
+      detail = `prompt="${event.prompt || ''}" maxSteps=${event.maxSteps ?? 'n/a'}`;
+      break;
+    case 'bootstrap_request':
+      detail = `attempt ${event.attempt || 0} prompt="${event.prompt || ''}" screenshot=${event.screenshotLength || 0}`;
+      break;
+    case 'bootstrap_response':
+      if (event.decision) {
+        detail = `action=${event.decision.action || 'none'}${event.decision.url ? ` url=${event.decision.url}` : ''}`;
+      } else {
+        detail = 'no decision';
+      }
+      break;
+    case 'bootstrap_error':
+      detail = `error=${event.error}`;
+      break;
+    case 'critic_request':
+      detail = `prompt="${event.prompt || ''}" screenshot=${event.screenshotLength || 0}`;
+      break;
+    case 'critic_response':
+      detail = decisionSummary(event.decision);
+      if (Array.isArray(event.completeHistory)) {
+        detail += ` complete=[${event.completeHistory.slice(-5).join(', ')}]`;
+      }
+      break;
+    case 'critic_error':
+      detail = `error=${event.error}`;
+      break;
+    case 'critic_no_action':
+      detail = 'no action returned (resend)';
+      break;
+    case 'step3_hittables':
+      detail = `hittables=${event.count || 0}`;
+      break;
+    case 'step3_radius':
+      detail = `candidates=${event.candidateCount || 0}`;
+      break;
+    case 'step3_exact_match':
+      if (event.target) {
+        detail = `exact target="${event.target.name || ''}" role=${event.target.role || ''}`;
+      }
+      break;
+    case 'assistant_request':
+      detail = `candidates=${event.candidateCount || 0}`;
+      break;
+    case 'assistant_response':
+      if (event.assistant?.action) {
+        detail = `assistant action=${event.assistant.action} confidence=${event.assistant.confidence ?? 'n/a'}`;
+      } else {
+        detail = 'assistant response (no action)';
+      }
+      break;
+    case 'assistant_error':
+      detail = `error=${event.error}`;
+      break;
+    case 'action_navigate':
+      detail = `navigate -> ${event.url}`;
+      break;
+    case 'action_scroll':
+      detail = `scroll ${event.direction || ''} amount=${event.amount || ''}`;
+      break;
+    case 'action_back':
+      detail = 'back navigation';
+      break;
+    case 'action_click':
+      detail = `click target="${event.target?.name || ''}" source=${event.source || ''}`;
+      break;
+    case 'action_stop':
+      detail = 'run stopped';
+      break;
+    case 'action_resend':
+      detail = 'critic requested resend';
+      break;
+    case 'await_assistance':
+      detail = 'awaiting assistance';
+      break;
+    case 'click_unresolved':
+      detail = `click unresolved status=${event.status}`;
+      break;
+    default:
+      detail = JSON.stringify(event);
+      break;
+  }
+
+  parts.push(detail);
+  return parts.join(' | ');
+}
+
+function formatWorkflowChunk(chunk) {
+  return chunk
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map(formatWorkflowLine)
+    .join('\n');
 }
 
 async function handleStart(argv, { suppressExit = false } = {}) {
@@ -215,7 +334,7 @@ async function listRuns() {
   }
 }
 
-async function tailFile(filePath, follow = false) {
+async function tailFile(filePath, follow = false, formatter = null) {
   const handle = await fsPromises.open(filePath, 'r');
   let position = 0;
   const pump = async () => {
@@ -225,7 +344,11 @@ async function tailFile(filePath, follow = false) {
       const buffer = Buffer.alloc(length);
       await handle.read(buffer, 0, length, position);
       position = size;
-      process.stdout.write(buffer.toString('utf8'));
+      const chunk = buffer.toString('utf8');
+      const output = formatter ? formatter(chunk) : chunk;
+      if (output && output.length) {
+        process.stdout.write(output.endsWith('\n') ? output : `${output}\n`);
+      }
     }
   };
   await pump();
@@ -260,6 +383,7 @@ async function tailFile(filePath, follow = false) {
 async function handleLogs(argv) {
   let runId = null;
   let follow = false;
+  let workflow = false;
   for (let i = 0; i < argv.length; i += 1) {
     const token = argv[i];
     switch (token) {
@@ -269,6 +393,9 @@ async function handleLogs(argv) {
       case '--follow':
       case '-f':
         follow = true;
+        break;
+      case '--workflow':
+        workflow = true;
         break;
       default:
         if (!runId) runId = token;
@@ -285,7 +412,8 @@ async function handleLogs(argv) {
     return;
   }
   const dir = path.join(RUNS_ROOT, runId);
-  const logPath = path.join(dir, 'run.log');
+  const fileName = workflow ? 'workflow.log' : 'run.log';
+  const logPath = path.join(dir, fileName);
   try {
     await fsPromises.access(logPath);
   } catch (err) {
@@ -296,9 +424,21 @@ async function handleLogs(argv) {
     return;
   }
 
-  console.log(`[nerovaagent] log for run ${runId} (${follow ? 'follow' : 'static'})`);
+  console.log(`[nerovaagent] ${workflow ? 'workflow' : 'log'} for run ${runId} (${follow ? 'follow' : 'static'})`);
   console.log(`[nerovaagent] path: ${logPath}`);
-  await tailFile(logPath, follow);
+  if (!follow) {
+    const data = await fsPromises.readFile(logPath, 'utf8').catch(() => '');
+    if (!data || !data.trim()) {
+      console.log('[nerovaagent] log is empty.');
+      return;
+    }
+    const output = workflow ? formatWorkflowChunk(data) : data.trimEnd();
+    process.stdout.write(output.endsWith('\n') ? output : `${output}\n`);
+    return;
+  }
+
+  await tailFile(logPath, true, workflow ? formatWorkflowChunk : null);
+
 }
 
 async function main() {

@@ -75,6 +75,13 @@ async function startRunSession(meta) {
         finishedAt: new Date().toISOString(),
         ...extra
       });
+    },
+    async logWorkflow(event) {
+      const payload = {
+        timestamp: new Date().toISOString(),
+        ...event
+      };
+      await fs.appendFile(path.join(dir, 'workflow.log'), `${JSON.stringify(payload)}\n`);
     }
   };
 
@@ -494,6 +501,13 @@ async function resolveClickTarget({
   step = 0
 }) {
   const hints = decision?.target?.hints || {};
+  const logWorkflow = async (event) => {
+    if (runContext?.logWorkflow) {
+      try {
+        await runContext.logWorkflow(event);
+      } catch {}
+    }
+  };
   const center = Array.isArray(decision?.target?.center) && decision.target.center.length === 2
     ? decision.target.center.map((value) => {
         const ratio = Number.isFinite(devicePixelRatio) && devicePixelRatio > 0 ? devicePixelRatio : 1;
@@ -505,40 +519,32 @@ async function resolveClickTarget({
   const radius = Number.isFinite(rawRadius)
     ? rawRadius / safeDpr
     : DEFAULT_CLICK_RADIUS;
-  console.log('[nerovaagent] target summary:', {
-    type: decision?.target?.type || null,
-    role: decision?.target?.role || null,
-    hasCenter: !!center,
-    hintExact: Array.isArray(hints.text_exact) ? hints.text_exact.length : 0,
-    hintContains: Array.isArray(hints.text_contains) ? hints.text_contains.length : 0,
-    hintRoles: Array.isArray(hints.roles) ? hints.roles.length : 0
-  });
-  if (center) {
-    console.log(`[nerovaagent] decision target center=${center.join(',')} radius=${radius} dpr=${safeDpr}`);
-  } else {
-    console.log(`[nerovaagent] decision target has no center; using default radius=${radius} dpr=${safeDpr}`);
-  }
   const allElementsRaw = await collectViewportElements(page, { max: 1500 });
   const allElements = dedupeElements(allElementsRaw);
-  if (runContext) {
-    await runContext.writeStepJson(step, 'step3-hittables', allElements.slice(0, 200));
-  }
-  console.log(`[nerovaagent] STEP3 hittables total=${allElements.length}`);
-  const candidates = filterByRadius(allElements, center, radius);
-  if (center) {
-    console.log(`[nerovaagent] step3 radius center=${center.join(',')} radius=${radius} pool=${candidates.length}`);
-  } else {
-    console.log(`[nerovaagent] step3 radius center=none radius=${radius} pool=${candidates.length}`);
-  }
-  if (candidates.length) {
-    console.log('[nerovaagent] step3 radius sample:', candidates.slice(0, 5).map((item) => ({
+  await logWorkflow({
+    stage: 'step3_hittables',
+    step,
+    count: allElements.length,
+    sample: allElements.slice(0, 5).map((item) => ({
       id: item.id || null,
       name: item.name,
       role: item.role,
       center: item.center,
-      rect: item.rect,
       hit: item.hit_state
-    })));
+    }))
+  });
+  if (runContext) {
+    await runContext.writeStepJson(step, 'step3-hittables', allElements.slice(0, 200));
+  }
+  const candidates = filterByRadius(allElements, center, radius);
+  await logWorkflow({
+    stage: 'step3_radius',
+    step,
+    candidateCount: candidates.length,
+    center,
+    radius
+  });
+  if (candidates.length) {
     if (runContext) {
       await runContext.writeStepJson(step, 'step3-radius', {
         center,
@@ -560,14 +566,6 @@ async function resolveClickTarget({
     const roleFiltered = preferredPool.filter((element) => expectedRoles.has(element?.role));
     if (roleFiltered.length) {
       preferredPool = roleFiltered;
-    }
-  }
-  console.log(`[nerovaagent] resolveClickTarget candidates=${candidates.length} hittable=${hittableCandidates.length} roleFilter=${Array.from(expectedRoles).join(',') || 'none'}`);
-  if (preferredPool.length) {
-    console.log('[nerovaagent] top candidates:');
-    for (const item of preferredPool.slice(0, 5)) {
-      const rect = item.rect ? item.rect.join(',') : 'n/a';
-      console.log(`  - name="${item.name || ''}" role=${item.role || ''} hit=${item.hit_state || ''} center=${Array.isArray(item.center) ? item.center.join(',') : 'n/a'} rect=${rect}`);
     }
   }
   const exactHints = Array.isArray(hints.text_exact) ? hints.text_exact.map(normalizeText).filter(Boolean) : [];
@@ -594,7 +592,16 @@ async function resolveClickTarget({
       : Array.isArray(exact.rect) && exact.rect.length === 4
         ? [exact.rect[0] + (exact.rect[2] || 0) / 2, exact.rect[1] + (exact.rect[3] || 0) / 2]
         : [0, 0];
-    console.log('[nerovaagent] exact match chosen:', { name: exact.name, role: exact.role, center: centerPoint, rect: exact.rect });
+    await logWorkflow({
+      stage: 'step3_exact_match',
+      step,
+      target: {
+        name: exact.name,
+        role: exact.role,
+        center: centerPoint,
+        id: exact.id || null
+      }
+    });
     return {
       status: 'ok',
       source: 'exact',
@@ -622,13 +629,14 @@ async function resolveClickTarget({
       assistantKey,
       assistantId
     };
-    console.log('[nerovaagent] assistant request candidates:', assistantPayload.elements.map((item) => ({
-      id: item.id || null,
-      name: item.name,
-      role: item.role,
-      center: item.center,
-      hit: item.hit_state
-    })));
+    await logWorkflow({
+      stage: 'assistant_request',
+      step,
+      target: decision?.target || null,
+      candidateCount: pool.length,
+      sessionId,
+      hints
+    });
     if (runContext) {
       const assistantLogPayload = {
         ...assistantPayload,
@@ -638,7 +646,18 @@ async function resolveClickTarget({
       await runContext.writeStepJson(step, 'assistant-request', assistantLogPayload);
     }
     try {
-      const response = await postJson(`${brainUrl}/v1/brain/assistant`, assistantPayload);
+      let response;
+      try {
+        response = await postJson(`${brainUrl}/v1/brain/assistant`, assistantPayload);
+      } catch (error) {
+        await logWorkflow({
+          stage: 'assistant_error',
+          step,
+          sessionId,
+          error: error?.message || String(error)
+        });
+        throw error;
+      }
       const parsed = response?.assistant?.parsed || response?.assistant || null;
       if (
         parsed &&
@@ -650,6 +669,12 @@ async function resolveClickTarget({
         if (runContext) {
           await runContext.writeStepJson(step, 'assistant-response', response.assistant || {});
         }
+        await logWorkflow({
+          stage: 'assistant_response',
+          step,
+          sessionId,
+          assistant: parsed
+        });
         return {
           status: 'assistant',
           source: 'assistant',
@@ -665,10 +690,15 @@ async function resolveClickTarget({
           }
         };
       }
-      console.log('[nerovaagent] assistant response (non-click):', response.assistant);
       if (runContext) {
         await runContext.writeStepJson(step, 'assistant-response', response.assistant || {});
       }
+      await logWorkflow({
+        stage: 'assistant_response',
+        step,
+        sessionId,
+        assistant: response.assistant || null
+      });
       return {
         status: 'await_assistance',
         assistant: response.assistant,
@@ -774,6 +804,14 @@ export async function runAgent({
     maxSteps
   });
 
+  await runSession.logWorkflow({
+    stage: 'run_start',
+    prompt: basePrompt,
+    brainUrl,
+    bootUrl,
+    maxSteps
+  });
+
   const normalizedBrainUrl = brainUrl.replace(/\/$/, '');
 
   const { context } = await ensureContext();
@@ -823,6 +861,15 @@ export async function runAgent({
           sessionId,
           criticKey
         };
+        await runSession.logWorkflow({
+          stage: 'bootstrap_request',
+          step: 0,
+          attempt,
+          label,
+          sessionId,
+          prompt: effectivePrompt,
+          screenshotLength: screenshotB64.length
+        });
         const logPayload = {
           ...payload,
           screenshot: `./${screenshotPath}`
@@ -830,14 +877,30 @@ export async function runAgent({
         if (logPayload.criticKey) logPayload.criticKey = '***';
         await runSession.writeStepJson(0, `${label}-input`, logPayload);
 
-        const consolePayload = {
-          ...payload,
-          screenshot: `base64(${screenshotB64.length} chars)`
-        };
-        if (consolePayload.criticKey) consolePayload.criticKey = '***';
-        console.log('[nerovaagent] bootstrap input:', consolePayload);
+        await runSession.logWorkflow({
+          stage: 'bootstrap_input_payload',
+          step: 0,
+          sessionId,
+          payload: {
+            ...payload,
+            screenshot: `base64(${screenshotB64.length} chars)`
+          }
+        });
 
-        const response = await postJson(`${normalizedBrainUrl}/v1/brain/bootstrap`, payload);
+        let response;
+        try {
+          response = await postJson(`${normalizedBrainUrl}/v1/brain/bootstrap`, payload);
+        } catch (error) {
+          await runSession.logWorkflow({
+            stage: 'bootstrap_error',
+            step: 0,
+            attempt,
+            label,
+            sessionId,
+            error: error?.message || String(error)
+          });
+          throw error;
+        }
         sessionId = response?.sessionId || sessionId;
         if (Array.isArray(response?.completeHistory)) {
           completeHistory = response.completeHistory;
@@ -845,11 +908,23 @@ export async function runAgent({
         await runSession.updateCompleteHistory(completeHistory);
         await runSession.writeStepJson(0, `${label}-output`, response || {});
         const decision = response?.decision || null;
-        console.log('[nerovaagent] bootstrap output:', {
-          action: decision?.action || null,
-          reason: decision?.reason || null,
-          url: decision?.url || null,
+        await runSession.logWorkflow({
+          stage: 'bootstrap_response',
+          step: 0,
+          attempt,
+          label,
           sessionId,
+          decision,
+          completeHistory
+        });
+        await runSession.logWorkflow({
+          stage: 'bootstrap_output_summary',
+          step: 0,
+          sessionId,
+          action: decision?.action || null,
+          url: decision?.url || null,
+          reason: decision?.reason || null,
+          decision,
           completeHistory
         });
 
@@ -904,14 +979,35 @@ export async function runAgent({
         if (criticLogPayload.criticKey) criticLogPayload.criticKey = '***';
         await runSession.writeStepJson(iterations, 'critic-input', criticLogPayload);
 
-        const consolePayload = {
-          ...criticPayload,
-          screenshot: `base64(${screenshotB64.length} chars)`
-        };
-        if (consolePayload.criticKey) consolePayload.criticKey = '***';
-        console.log('[nerovaagent] critic input:', consolePayload);
+        await runSession.logWorkflow({
+          stage: 'critic_input_payload',
+          step: iterations,
+          sessionId,
+          payload: {
+            ...criticPayload,
+            screenshot: `base64(${screenshotB64.length} chars)`
+          }
+        });
+        await runSession.logWorkflow({
+          stage: 'critic_request',
+          step: iterations,
+          sessionId,
+          prompt: effectivePrompt,
+          screenshotLength: screenshotB64.length
+        });
 
-        const criticResponse = await postJson(`${normalizedBrainUrl}/v1/brain/critic`, criticPayload);
+        let criticResponse;
+        try {
+          criticResponse = await postJson(`${normalizedBrainUrl}/v1/brain/critic`, criticPayload);
+        } catch (error) {
+          await runSession.logWorkflow({
+            stage: 'critic_error',
+            step: iterations,
+            sessionId,
+            error: error?.message || String(error)
+          });
+          throw error;
+        }
         sessionId = criticResponse?.sessionId || sessionId;
         if (Array.isArray(criticResponse?.completeHistory)) {
           completeHistory = criticResponse.completeHistory;
@@ -919,12 +1015,21 @@ export async function runAgent({
         await runSession.updateCompleteHistory(completeHistory);
         await runSession.writeStepJson(iterations, 'critic-output', criticResponse || {});
         const decision = criticResponse?.decision || null;
-        console.log('[nerovaagent] critic output:', {
+        await runSession.logWorkflow({
+          stage: 'critic_output_payload',
+          step: iterations,
+          sessionId,
           decision,
           completeHistory,
-          sessionId,
           raw: criticResponse?.critic?.raw || null,
           confidence: decision?.confidence ?? null
+        });
+        await runSession.logWorkflow({
+          stage: 'critic_response',
+          step: iterations,
+          sessionId,
+          decision,
+          completeHistory
         });
 
         const decisionLabel = decision?.action || 'none';
@@ -935,6 +1040,10 @@ export async function runAgent({
         if (!decision || !decision.action) {
           status = 'resend';
           await runSession.log('critic returned no action, resend');
+          await runSession.logWorkflow({
+            stage: 'critic_no_action',
+            step: iterations
+          });
           await delay(250);
           continue;
         }
@@ -942,12 +1051,20 @@ export async function runAgent({
         if (decision.action === 'stop') {
           status = 'stop';
           await runSession.log('stop requested by critic');
+          await runSession.logWorkflow({
+            stage: 'action_stop',
+            step: iterations
+          });
           break;
         }
 
         if (decision.action === 'resend') {
           status = 'resend';
           await runSession.log('critic requested resend');
+          await runSession.logWorkflow({
+            stage: 'action_resend',
+            step: iterations
+          });
           await delay(300);
           continue;
         }
@@ -959,6 +1076,12 @@ export async function runAgent({
             reason: decision.reason || null
           });
           await runSession.log(`navigate -> ${decision.url}`);
+          await runSession.logWorkflow({
+            stage: 'action_navigate',
+            step: iterations,
+            url: decision.url,
+            reason: decision.reason || null
+          });
           status = 'continue';
           continue;
         }
@@ -972,6 +1095,12 @@ export async function runAgent({
             reason: decision.reason || null
           });
           await runSession.log(`scroll direction=${dir} amount=${decision?.scroll?.amount || decision?.scroll?.pages || ''}`);
+          await runSession.logWorkflow({
+            stage: 'action_scroll',
+            step: iterations,
+            direction: dir,
+            amount: decision?.scroll?.amount || decision?.scroll?.pages || null
+          });
           status = 'continue';
           continue;
         }
@@ -979,6 +1108,10 @@ export async function runAgent({
         if (decision.action === 'back') {
           await executeAction(activePage, { type: 'back' });
           await runSession.log('back');
+          await runSession.logWorkflow({
+            stage: 'action_back',
+            step: iterations
+          });
           status = 'continue';
           continue;
         }
@@ -1008,7 +1141,6 @@ export async function runAgent({
               clear: decision?.target?.clear || false,
               submit: decision?.target?.submit || false
             };
-            console.log(`[nerovaagent] click target name=${target.name || 'unknown'} source=${selection.source || selection.status} center=${Array.isArray(selection.center) ? selection.center.join(',') : 'n/a'}`);
             await runSession.log(`click name=${target.name || 'unknown'} source=${selection.source || selection.status} center=${Array.isArray(selection.center) ? selection.center.join(',') : 'n/a'}`);
             await runSession.writeStepJson(iterations, 'click-selection', {
               target,
@@ -1020,6 +1152,12 @@ export async function runAgent({
               target,
               source: selection.source || selection.status
             });
+            await runSession.logWorkflow({
+              stage: 'action_click',
+              step: iterations,
+              target,
+              source: selection.source || selection.status
+            });
             status = 'continue';
             continue;
           }
@@ -1027,6 +1165,10 @@ export async function runAgent({
           if (selection.status === 'await_assistance') {
             console.warn('[nerovaagent] backend awaiting additional assistance; pausing iteration.');
             await runSession.log('awaiting additional assistance');
+            await runSession.logWorkflow({
+              stage: 'await_assistance',
+              step: iterations
+            });
             status = 'await_assistance';
             await delay(800);
             continue;
@@ -1034,6 +1176,11 @@ export async function runAgent({
 
           console.warn(`[nerovaagent] click target not resolved (${selection.status || 'unknown'}).`);
           await runSession.log(`click target unresolved status=${selection.status || 'unknown'}`);
+          await runSession.logWorkflow({
+            stage: 'click_unresolved',
+            step: iterations,
+            status: selection.status || 'unknown'
+          });
           status = 'halt';
           break;
         }
