@@ -127,7 +127,8 @@ export async function callCritic({
   openaiApiKey = null,
   model = process.env.CRITIC_MODEL || 'gpt-5',
   systemPrompt: systemPromptOverride = null,
-  userPayload: explicitUserPayload = null
+  userPayload: explicitUserPayload = null,
+  signal = null
 }) {
   assert(prompt && prompt.trim(), 'prompt_required');
   assert(screenshot && screenshot.length > 10, 'screenshot_required');
@@ -186,7 +187,8 @@ export async function callCritic({
       'Authorization': `Bearer ${apiKey}`,
       'Content-Type': 'application/json'
     },
-    body: JSON.stringify(body)
+    body: JSON.stringify(body),
+    signal: signal ?? undefined
   });
   if (!resp.ok) {
     const text = await resp.text().catch(() => '');
@@ -242,7 +244,8 @@ export async function callAssistantDecision({
   screenshot,
   openaiApiKey = null,
   assistantId = process.env.ASSISTANT_ID2 || null,
-  pollTimeoutMs = 30000
+  pollTimeoutMs = 30000,
+  signal = null
 }) {
   if (!screenshot || screenshot.length < 20) {
     throw new Error('assistant_screenshot_required');
@@ -274,7 +277,8 @@ export async function callAssistantDecision({
     const upload = await fetch('https://api.openai.com/v1/files', {
       method: 'POST',
       headers: { Authorization: `Bearer ${apiKey}` },
-      body: form
+      body: form,
+      signal: signal ?? undefined
     });
     if (!upload.ok) {
       const text = await upload.text().catch(() => '');
@@ -289,7 +293,8 @@ export async function callAssistantDecision({
         'Content-Type': 'application/json',
         'OpenAI-Beta': 'assistants=v2'
       },
-      body: JSON.stringify({})
+      body: JSON.stringify({}),
+      signal: signal ?? undefined
     });
     if (!threadResp.ok) {
       const text = await threadResp.text().catch(() => '');
@@ -310,7 +315,8 @@ export async function callAssistantDecision({
           { type: 'text', text: JSON.stringify(payload) },
           { type: 'image_file', image_file: { file_id: fileMeta.id } }
         ]
-      })
+      }),
+      signal: signal ?? undefined
     });
     if (!messageResp.ok) {
       const text = await messageResp.text().catch(() => '');
@@ -324,7 +330,8 @@ export async function callAssistantDecision({
         'Content-Type': 'application/json',
         'OpenAI-Beta': 'assistants=v2'
       },
-      body: JSON.stringify({ assistant_id: assistantId })
+      body: JSON.stringify({ assistant_id: assistantId }),
+      signal: signal ?? undefined
     });
     if (!runResp.ok) {
       const text = await runResp.text().catch(() => '');
@@ -333,12 +340,19 @@ export async function callAssistantDecision({
     let run = await runResp.json();
     const start = Date.now();
     while (run.status !== 'completed') {
+      if (signal?.aborted) {
+        throw new Error('assistant_poll_aborted');
+      }
       await new Promise((resolve) => setTimeout(resolve, 800));
+      if (signal?.aborted) {
+        throw new Error('assistant_poll_aborted');
+      }
       const poll = await fetch(`https://api.openai.com/v1/threads/${thread.id}/runs/${run.id}`, {
         headers: {
           Authorization: `Bearer ${apiKey}`,
           'OpenAI-Beta': 'assistants=v2'
-        }
+        },
+        signal: signal ?? undefined
       });
       if (!poll.ok) {
         const text = await poll.text().catch(() => '');
@@ -353,11 +367,15 @@ export async function callAssistantDecision({
       }
     }
 
+    if (signal?.aborted) {
+      throw new Error('assistant_poll_aborted');
+    }
     const messages = await fetch(`https://api.openai.com/v1/threads/${thread.id}/messages`, {
       headers: {
         Authorization: `Bearer ${apiKey}`,
         'OpenAI-Beta': 'assistants=v2'
-      }
+      },
+      signal: signal ?? undefined
     });
     if (!messages.ok) {
       const text = await messages.text().catch(() => '');
@@ -407,7 +425,8 @@ export async function callAssistantDecision({
       Authorization: `Bearer ${apiKey}`,
       'Content-Type': 'application/json'
     },
-    body: JSON.stringify(body)
+    body: JSON.stringify(body),
+    signal: signal ?? undefined
   });
   if (!resp.ok) {
     const text = await resp.text().catch(() => '');

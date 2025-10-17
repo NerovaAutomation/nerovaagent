@@ -19,11 +19,89 @@ let activeRunSession = null;
 let pauseRequested = false;
 let pauseAck = false;
 let abortRequested = false;
+let pauseGeneration = 0;
+let pauseHandledGeneration = 0;
 const pausedContextQueue = [];
+const activeAbortControllers = new Set();
+const pendingHistoryLines = [];
+let suppressHistoryOutput = false;
+
+class PauseInterrupt extends Error {
+  constructor(stage, options = {}) {
+    super(options.abort ? 'run_aborted' : 'pause_interrupt');
+    this.code = options.abort ? 'run_aborted' : 'pause_interrupt';
+    this.stage = stage;
+    this.abort = options.abort === true;
+  }
+}
+
+function registerAbortController(tag = 'fetch') {
+  const controller = new AbortController();
+  controller.__nerovaTag = tag;
+  activeAbortControllers.add(controller);
+  const cleanup = () => {
+    activeAbortControllers.delete(controller);
+  };
+  controller.signal.addEventListener('abort', cleanup, { once: true });
+  return { controller, cleanup };
+}
+
+function abortActiveControllers(reason = 'pause') {
+  for (const controller of Array.from(activeAbortControllers)) {
+    try {
+      if (!controller.signal.aborted) {
+        controller.__nerovaAbortReason = reason;
+        controller.abort(reason);
+      }
+    } catch {}
+  }
+}
+
+function isAbortError(error) {
+  if (!error) return false;
+  if (error.name === 'AbortError') return true;
+  if (typeof error.code === 'string' && error.code.toUpperCase() === 'ABORT_ERR') return true;
+  const message = error.message || '';
+  return message.toLowerCase().includes('abort');
+}
+
+function emitHistoryLine(text) {
+  if (!text) return;
+  if (suppressHistoryOutput || pauseRequested || pauseGeneration > pauseHandledGeneration) {
+    pendingHistoryLines.push(text);
+    if (pendingHistoryLines.length > 200) {
+      pendingHistoryLines.shift();
+    }
+    return;
+  }
+  console.log(text);
+}
+
+function shouldHardPause() {
+  return pauseRequested || pauseGeneration > pauseHandledGeneration;
+}
+
+function ensureNotPaused(stage, { allowAbort = false } = {}) {
+  if (allowAbort && abortRequested) {
+    throw new PauseInterrupt(stage, { abort: true });
+  }
+  if (shouldHardPause()) {
+    throw new PauseInterrupt(stage);
+  }
+}
+
+function isPauseInterrupt(error) {
+  if (!error) return false;
+  if (error instanceof PauseInterrupt) return true;
+  return error?.code === 'pause_interrupt';
+}
 
 export function requestPause() {
   pauseRequested = true;
   pauseAck = false;
+  pauseGeneration += 1;
+  abortActiveControllers('pause');
+  suppressHistoryOutput = true;
 }
 
 export function abortRun() {
@@ -31,6 +109,9 @@ export function abortRun() {
   pauseRequested = false;
   pauseAck = false;
   pausedContextQueue.length = 0;
+  abortActiveControllers('abort_run');
+  suppressHistoryOutput = true;
+  pendingHistoryLines.length = 0;
 }
 
 export function supplyContext(text) {
@@ -40,6 +121,7 @@ export function supplyContext(text) {
   }
   pauseRequested = false;
   pauseAck = true;
+  suppressHistoryOutput = false;
 }
 
 function consumeContext() {
@@ -69,6 +151,9 @@ async function startRunSession(meta) {
   pauseAck = false;
   abortRequested = false;
   pausedContextQueue.length = 0;
+  pauseHandledGeneration = pauseGeneration;
+  pendingHistoryLines.length = 0;
+  suppressHistoryOutput = false;
 
   await fs.mkdir(RUNS_ROOT, { recursive: true });
   const startedAt = new Date();
@@ -150,6 +235,10 @@ async function endRunSession(status, extra = {}) {
     await activeRunSession.finish(status, extra);
     activeRunSession = null;
   }
+  abortActiveControllers('run_complete');
+  pendingHistoryLines.length = 0;
+  suppressHistoryOutput = false;
+  pauseHandledGeneration = pauseGeneration;
 }
 
 async function ensureContext({ headlessOverride } = {}) {
@@ -398,15 +487,20 @@ function delay(ms) {
 }
 
 async function executeAction(page, action = {}) {
+  const label = action?.type ? `action_${action.type}` : 'action_unknown';
+  ensureNotPaused(`${label}_start`, { allowAbort: true });
   switch (action.type) {
     case 'navigate':
       if (action.url) {
+        ensureNotPaused(`${label}_pre`, { allowAbort: true });
         await page.goto(action.url, { waitUntil: 'load' });
+        ensureNotPaused(`${label}_post`, { allowAbort: true });
       }
       break;
     case 'scroll': {
       const direction = action.direction === 'up' ? 'up' : 'down';
       const pages = Number(action.amount) || 1;
+      ensureNotPaused(`${label}_pre`, { allowAbort: true });
       await page.evaluate(({ direction, pages }) => {
         const dir = direction === 'up' ? -1 : 1;
         const step = Math.max(200, Math.round((window.innerHeight || 800) * 0.8));
@@ -414,20 +508,23 @@ async function executeAction(page, action = {}) {
           window.scrollBy({ top: dir * step, behavior: 'smooth' });
         }
       }, { direction, pages });
+      ensureNotPaused(`${label}_post`, { allowAbort: true });
       break;
     }
     case 'click': {
       await page.bringToFront().catch(() => {});
-      let clicked = false;
+      ensureNotPaused(`${label}_pre`, { allowAbort: true });
       if (Array.isArray(action.center) && action.center.length === 2) {
         const [x, y] = action.center.map((value) => Math.round(value));
+        ensureNotPaused(`${label}_pre_click`, { allowAbort: true });
         await page.mouse.click(x, y, { button: 'left', clickCount: 1 });
-        clicked = true;
+        ensureNotPaused(`${label}_post_click`, { allowAbort: true });
       } else {
         console.warn('[nerovaagent] click action skipped (no coordinates)');
         break;
       }
       await delay(120);
+      ensureNotPaused(`${label}_post_delay`, { allowAbort: true });
       if (action.target?.clear) {
         await page.evaluate(() => {
           try {
@@ -443,37 +540,78 @@ async function executeAction(page, action = {}) {
             }
           } catch {}
         });
+        ensureNotPaused(`${label}_post_clear`, { allowAbort: true });
         await delay(60);
+        ensureNotPaused(`${label}_post_clear_delay`, { allowAbort: true });
       }
       if (typeof action.target?.content === 'string' && action.target.content.length) {
-        await page.keyboard.type(action.target.content, { delay: 120 });
+        for (const char of action.target.content) {
+          ensureNotPaused(`${label}_typing`, { allowAbort: true });
+          await page.keyboard.type(char, { delay: 120 });
+        }
+        ensureNotPaused(`${label}_typing_post`, { allowAbort: true });
         if (action.target.submit) {
+          ensureNotPaused(`${label}_submit_pre`, { allowAbort: true });
           await page.keyboard.press('Enter');
+          ensureNotPaused(`${label}_submit_post`, { allowAbort: true });
         }
       }
       break;
     }
     case 'back':
+      ensureNotPaused(`${label}_pre`, { allowAbort: true });
       await page.goBack().catch(() => {});
+      ensureNotPaused(`${label}_post`, { allowAbort: true });
       break;
     default:
+      ensureNotPaused(`${label}_noop`, { allowAbort: true });
       break;
   }
 }
 
-async function postJson(url, body) {
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  });
-  if (!response.ok) {
-    const text = await response.text().catch(() => '');
-    const error = new Error(`HTTP ${response.status}: ${text}`);
-    error.status = response.status;
-    throw error;
+async function postJson(url, body, options = {}) {
+  const {
+    signal: externalSignal = null,
+    pauseSensitive = true,
+    tag = 'fetch'
+  } = options;
+  let controller = null;
+  let cleanup = () => {};
+  let signal = externalSignal;
+  if (!signal && pauseSensitive) {
+    const registration = registerAbortController(tag);
+    controller = registration.controller;
+    cleanup = registration.cleanup;
+    signal = controller.signal;
   }
-  return response.json();
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal
+    });
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      const error = new Error(`HTTP ${response.status}: ${text}`);
+      error.status = response.status;
+      throw error;
+    }
+    return await response.json();
+  } catch (error) {
+    if (pauseSensitive && (controller?.signal?.aborted || (externalSignal && externalSignal.aborted) || isAbortError(error))) {
+      const reason = controller?.signal?.reason || externalSignal?.reason || controller?.__nerovaAbortReason || null;
+      if (reason === 'pause' || (pauseRequested && reason == null)) {
+        throw new PauseInterrupt(tag || 'fetch');
+      }
+      if (reason === 'abort_run' || abortRequested) {
+        throw new PauseInterrupt(tag || 'fetch', { abort: true });
+      }
+    }
+    throw error;
+  } finally {
+    if (cleanup) cleanup();
+  }
 }
 
 function filterByRadius(elements, center, radius = DEFAULT_CLICK_RADIUS) {
@@ -537,8 +675,22 @@ async function resolveClickTarget({
   assistantKey,
   assistantId,
   runContext = null,
-  step = 0
+  step = 0,
+  pauseGate = null
 }) {
+  const waitIfPaused = async (stage) => {
+    if (typeof pauseGate !== 'function') {
+      return { acknowledged: true, resumed: false };
+    }
+    const outcome = await pauseGate(stage, step);
+    if (outcome && typeof outcome.acknowledged === 'boolean') {
+      return outcome;
+    }
+    return {
+      acknowledged: Boolean(outcome),
+      resumed: false
+    };
+  };
   const hints = decision?.target?.hints || {};
   const logWorkflow = async (event) => {
     if (runContext?.logWorkflow) {
@@ -558,6 +710,13 @@ async function resolveClickTarget({
   const radius = Number.isFinite(rawRadius)
     ? rawRadius / safeDpr
     : DEFAULT_CLICK_RADIUS;
+  const collectGate = await waitIfPaused('step3_collect');
+  if (!collectGate.acknowledged) {
+    return { status: 'aborted' };
+  }
+  if (collectGate.resumed) {
+    return { status: 'retry' };
+  }
   const allElementsRaw = await collectViewportElements(page, { max: 1500 });
   const allElements = dedupeElements(allElementsRaw);
   await logWorkflow({
@@ -658,6 +817,13 @@ async function resolveClickTarget({
 
   const tryAssistant = async (pool) => {
     if (!pool.length) return null;
+    const assistantGate = await waitIfPaused('assistant_pre_request');
+    if (!assistantGate.acknowledged) {
+      return { status: 'aborted' };
+    }
+    if (assistantGate.resumed) {
+      return { status: 'retry' };
+    }
     const assistantPayload = {
       mode: MODE,
       prompt,
@@ -687,8 +853,23 @@ async function resolveClickTarget({
     try {
       let response;
       try {
-        response = await postJson(`${brainUrl}/v1/brain/assistant`, assistantPayload);
+        response = await postJson(`${brainUrl}/v1/brain/assistant`, assistantPayload, { tag: 'assistant' });
       } catch (error) {
+        if (isPauseInterrupt(error)) {
+          if (error.abort) {
+            return { status: 'aborted' };
+          }
+          await logWorkflow({
+            stage: 'assistant_pause_interrupt',
+            step,
+            sessionId
+          });
+          const resumedGate = await waitIfPaused('assistant_pause_interrupt');
+          if (!resumedGate.acknowledged) {
+            return { status: 'aborted' };
+          }
+          return { status: 'retry' };
+        }
         await logWorkflow({
           stage: 'assistant_error',
           step,
@@ -698,6 +879,13 @@ async function resolveClickTarget({
         throw error;
       }
       const parsed = response?.assistant?.parsed || response?.assistant || null;
+      const assistantResponseGate = await waitIfPaused('assistant_post_response');
+      if (!assistantResponseGate.acknowledged) {
+        return { status: 'aborted' };
+      }
+      if (assistantResponseGate.resumed) {
+        return { status: 'retry' };
+      }
       if (
         parsed &&
         (parsed.action === 'click' || parsed.action === 'accept') &&
@@ -770,22 +958,28 @@ async function resolveClickTarget({
 
   if (preferredPool.length) {
     // We now rely on the backend assistant when an exact-match click is unavailable.
-    const assistantResult = await tryAssistant(preferredPool);
-    if (assistantResult?.status === 'assistant') {
+    let assistantResult = await tryAssistant(preferredPool);
+    while (assistantResult?.status === 'retry') {
+      assistantResult = await tryAssistant(preferredPool);
+    }
+    if (assistantResult?.status === 'assistant' || assistantResult?.status === 'aborted') {
       return assistantResult;
     }
     if (assistantResult) {
-      console.log(`[nerovaagent] assistant fallback status=${assistantResult.status || 'unknown'}`);
+      emitHistoryLine(`[nerovaagent] assistant fallback status=${assistantResult.status || 'unknown'}`);
       if (assistantResult.status === 'await_assistance' || assistantResult.status === 'assistant_error') {
         return assistantResult;
       }
     }
   }
 
-  const lastResort = await tryAssistant(allElements.slice(0, 12));
+  let lastResort = await tryAssistant(allElements.slice(0, 12));
+  while (lastResort?.status === 'retry') {
+    lastResort = await tryAssistant(allElements.slice(0, 12));
+  }
   if (lastResort) {
     if (lastResort.status !== 'assistant') {
-      console.log(`[nerovaagent] last-resort assistant status=${lastResort.status || 'unknown'}`);
+      emitHistoryLine(`[nerovaagent] last-resort assistant status=${lastResort.status || 'unknown'}`);
     }
     return lastResort;
   }
@@ -872,6 +1066,37 @@ export async function runAgent({
     }
     return true;
   };
+  const pauseBarrier = async (stage, step = null) => {
+    const generation = pauseGeneration;
+    const needsHandling = pauseRequested || generation > pauseHandledGeneration;
+    if (!needsHandling) {
+      return { acknowledged: true, resumed: false };
+    }
+    const barrierMeta = {
+      stage: 'pause_barrier',
+      barrierStage: stage,
+      step,
+      generation
+    };
+    await runSession.log(`pause barrier stage=${stage}${step != null ? ` step=${step}` : ''} generation=${generation}`);
+    await runSession.logWorkflow({ ...barrierMeta, state: pauseRequested ? 'waiting' : 'resuming' });
+    if (!pauseAck) {
+      const acknowledged = await waitForPauseAcknowledgement();
+      if (!acknowledged) {
+        await runSession.logWorkflow({ ...barrierMeta, state: 'aborted' });
+        return { acknowledged: false, resumed: false };
+      }
+    }
+    pauseHandledGeneration = generation;
+    if (!suppressHistoryOutput && pendingHistoryLines.length) {
+      while (pendingHistoryLines.length) {
+        const line = pendingHistoryLines.shift();
+        if (line) console.log(line);
+      }
+    }
+    await runSession.logWorkflow({ ...barrierMeta, state: 'resumed' });
+    return { acknowledged: true, resumed: true };
+  };
   let iterations = 0;
   let completeHistory = [];
   let status = 'in_progress';
@@ -884,10 +1109,12 @@ export async function runAgent({
     }
 
     captureFrame = async (step, imageName = 'critic.png') => {
+      ensureNotPaused('capture_frame', { allowAbort: true });
       const buffer = await activePage.screenshot({ fullPage: false }).catch(() => null);
       if (!buffer) {
         throw new Error('screenshot_failed');
       }
+      ensureNotPaused('capture_frame_post', { allowAbort: true });
       const pathName = await runSession.writeStepBuffer(step, imageName, buffer);
       let devicePixelRatio = 1;
       try {
@@ -912,17 +1139,37 @@ export async function runAgent({
           break;
         }
 
-        if (pauseRequested) {
-          await runSession.log('pause requested');
-          const acknowledged = await waitForPauseAcknowledgement();
-          if (!acknowledged) {
-            status = 'aborted';
-            break;
-          }
+        const bootstrapCaptureGate = await pauseBarrier('bootstrap_pre_capture', attempt);
+        if (!bootstrapCaptureGate.acknowledged) {
+          status = 'aborted';
+          break;
+        }
+        if (bootstrapCaptureGate.resumed) {
+          attempt -= 1;
+          continue;
         }
 
         const label = `bootstrap-${String(attempt).padStart(2, '0')}`;
-        const { screenshotB64, screenshotPath } = await captureFrame(0, `${label}.png`);
+        let screenshotResult;
+        try {
+          screenshotResult = await captureFrame(0, `${label}.png`);
+        } catch (error) {
+          if (isPauseInterrupt(error)) {
+            if (error.abort) {
+              status = 'aborted';
+              break;
+            }
+            const resumedBarrier = await pauseBarrier(error.stage || 'bootstrap_capture_interrupt', attempt);
+            if (!resumedBarrier.acknowledged) {
+              status = 'aborted';
+              break;
+            }
+            attempt -= 1;
+            continue;
+          }
+          throw error;
+        }
+        const { screenshotB64, screenshotPath } = screenshotResult;
         const payload = {
           mode: MODE,
           prompt: effectivePrompt,
@@ -956,10 +1203,42 @@ export async function runAgent({
           }
         });
 
+        const bootstrapRequestGate = await pauseBarrier('bootstrap_pre_request', attempt);
+        if (!bootstrapRequestGate.acknowledged) {
+          status = 'aborted';
+          break;
+        }
+        if (bootstrapRequestGate.resumed) {
+          attempt -= 1;
+          continue;
+        }
+
         let response;
         try {
-          response = await postJson(`${normalizedBrainUrl}/v1/brain/bootstrap`, payload);
+          response = await postJson(`${normalizedBrainUrl}/v1/brain/bootstrap`, payload, { tag: 'bootstrap' });
         } catch (error) {
+          if (isPauseInterrupt(error)) {
+            if (error.abort) {
+              status = 'aborted';
+              break;
+            }
+            await runSession.logWorkflow({
+              stage: 'bootstrap_pause_interrupt',
+              step: 0,
+              attempt,
+              label,
+              sessionId
+            });
+            const resumedBarrier = await pauseBarrier('bootstrap_pause_interrupt', attempt);
+            if (!resumedBarrier.acknowledged) {
+              status = 'aborted';
+              break;
+            }
+            if (resumedBarrier.resumed) {
+              attempt -= 1;
+              continue;
+            }
+          }
           await runSession.logWorkflow({
             stage: 'bootstrap_error',
             step: 0,
@@ -974,6 +1253,21 @@ export async function runAgent({
         if (Array.isArray(response?.completeHistory)) {
           completeHistory = response.completeHistory;
         }
+
+        const bootstrapResponseGate = await pauseBarrier('bootstrap_post_response', attempt);
+        if (!bootstrapResponseGate.acknowledged) {
+          status = 'aborted';
+          break;
+        }
+        if (bootstrapResponseGate.resumed) {
+          attempt -= 1;
+          continue;
+        }
+        if (bootstrapResponseGate.resumed) {
+          attempt -= 1;
+          continue;
+        }
+
         await runSession.updateCompleteHistory(completeHistory);
         await runSession.writeStepJson(0, `${label}-output`, response || {});
         const decision = response?.decision || null;
@@ -1011,12 +1305,38 @@ export async function runAgent({
 
         if (decision.action === 'navigate' && decision.url) {
           await runSession.log(`bootstrap navigate -> ${decision.url}`);
-          await executeAction(activePage, {
-            type: 'navigate',
-            url: decision.url,
-            reason: decision.reason || null
-          });
+          try {
+            await executeAction(activePage, {
+              type: 'navigate',
+              url: decision.url,
+              reason: decision.reason || null
+            });
+          } catch (error) {
+            if (isPauseInterrupt(error)) {
+              if (error.abort) {
+                status = 'aborted';
+                break;
+              }
+              const resumedBarrier = await pauseBarrier(error.stage || 'bootstrap_action_navigate', attempt);
+              if (!resumedBarrier.acknowledged) {
+                status = 'aborted';
+                break;
+              }
+              attempt -= 1;
+              continue;
+            }
+            throw error;
+          }
           await delay(800);
+          const postNavigateGate = await pauseBarrier('bootstrap_post_navigate', attempt);
+          if (!postNavigateGate.acknowledged) {
+            status = 'aborted';
+            break;
+          }
+          if (postNavigateGate.resumed) {
+            attempt -= 1;
+            continue;
+          }
           break;
         }
 
@@ -1040,13 +1360,15 @@ export async function runAgent({
           break;
         }
 
-        if (pauseRequested) {
-          await runSession.log('pause requested');
-          const acknowledged = await waitForPauseAcknowledgement();
-          if (!acknowledged) {
-            status = 'aborted';
-            break;
-          }
+        const loopEntryGate = await pauseBarrier('critic_loop_entry', iterations);
+        if (!loopEntryGate.acknowledged) {
+          status = 'aborted';
+          break;
+        }
+        if (loopEntryGate.resumed) {
+          iterations -= 1;
+          runSession.currentStep = iterations;
+          continue;
         }
 
         const contextAddition = consumeContext();
@@ -1065,7 +1387,38 @@ export async function runAgent({
 
         await delay(200);
 
-        const { screenshotB64, screenshotPath, devicePixelRatio } = await captureFrame(iterations);
+        const preCaptureGate = await pauseBarrier('critic_pre_capture', iterations);
+        if (!preCaptureGate.acknowledged) {
+          status = 'aborted';
+          break;
+        }
+        if (preCaptureGate.resumed) {
+          iterations -= 1;
+          runSession.currentStep = iterations;
+          continue;
+        }
+
+        let criticFrameResult;
+        try {
+          criticFrameResult = await captureFrame(iterations);
+        } catch (error) {
+          if (isPauseInterrupt(error)) {
+            if (error.abort) {
+              status = 'aborted';
+              break;
+            }
+            const resumedBarrier = await pauseBarrier(error.stage || 'critic_capture_interrupt', iterations);
+            if (!resumedBarrier.acknowledged) {
+              status = 'aborted';
+              break;
+            }
+            iterations -= 1;
+            runSession.currentStep = iterations;
+            continue;
+          }
+          throw error;
+        }
+        const { screenshotB64, screenshotPath, devicePixelRatio } = criticFrameResult;
         const criticPayload = {
           mode: MODE,
           prompt: effectivePrompt,
@@ -1097,10 +1450,40 @@ export async function runAgent({
           screenshotLength: screenshotB64.length
         });
 
+        const preCriticRequestGate = await pauseBarrier('critic_pre_request', iterations);
+        if (!preCriticRequestGate.acknowledged) {
+          status = 'aborted';
+          break;
+        }
+        if (preCriticRequestGate.resumed) {
+          iterations -= 1;
+          runSession.currentStep = iterations;
+          continue;
+        }
+
         let criticResponse;
         try {
-          criticResponse = await postJson(`${normalizedBrainUrl}/v1/brain/critic`, criticPayload);
+          criticResponse = await postJson(`${normalizedBrainUrl}/v1/brain/critic`, criticPayload, { tag: 'critic' });
         } catch (error) {
+          if (isPauseInterrupt(error)) {
+            if (error.abort) {
+              status = 'aborted';
+              break;
+            }
+            await runSession.logWorkflow({
+              stage: 'critic_pause_interrupt',
+              step: iterations,
+              sessionId
+            });
+            const resumedBarrier = await pauseBarrier('critic_pause_interrupt', iterations);
+            if (!resumedBarrier.acknowledged) {
+              status = 'aborted';
+              break;
+            }
+            iterations -= 1;
+            runSession.currentStep = iterations;
+            continue;
+          }
           await runSession.logWorkflow({
             stage: 'critic_error',
             step: iterations,
@@ -1109,6 +1492,17 @@ export async function runAgent({
           });
           throw error;
         }
+        const postCriticResponseGate = await pauseBarrier('critic_post_response', iterations);
+        if (!postCriticResponseGate.acknowledged) {
+          status = 'aborted';
+          break;
+        }
+        if (postCriticResponseGate.resumed) {
+          iterations -= 1;
+          runSession.currentStep = iterations;
+          continue;
+        }
+
         sessionId = criticResponse?.sessionId || sessionId;
         if (Array.isArray(criticResponse?.completeHistory)) {
           completeHistory = criticResponse.completeHistory;
@@ -1116,6 +1510,16 @@ export async function runAgent({
         await runSession.updateCompleteHistory(completeHistory);
         await runSession.writeStepJson(iterations, 'critic-output', criticResponse || {});
         const decision = criticResponse?.decision || null;
+        const preHistoryGate = await pauseBarrier('critic_pre_history', iterations);
+        if (!preHistoryGate.acknowledged) {
+          status = 'aborted';
+          break;
+        }
+        if (preHistoryGate.resumed) {
+          iterations -= 1;
+          runSession.currentStep = iterations;
+          continue;
+        }
         await runSession.logWorkflow({
           stage: 'critic_output_payload',
           step: iterations,
@@ -1138,13 +1542,13 @@ export async function runAgent({
         await runSession.log(`step ${iterations} action=${decisionLabel}${reason ? ` :: ${reason}` : ''}`);
         const historySummary = completeHistory.length ? completeHistory.join(' -> ') : '(none)';
         if (!historySummary || historySummary === '(none)') {
-          console.log('[nerovaagent] complete history: (none)');
+          emitHistoryLine('[nerovaagent] complete history: (none)');
         } else {
           const latest = completeHistory[completeHistory.length - 1];
           if (typeof latest === 'string' && latest.trim()) {
-            console.log(`[nerovaagent] + ${latest.trim()}`);
+            emitHistoryLine(`[nerovaagent] + ${latest.trim()}`);
           } else {
-            console.log(`[nerovaagent] complete history: ${historySummary}`);
+            emitHistoryLine(`[nerovaagent] complete history: ${historySummary}`);
           }
         }
 
@@ -1181,11 +1585,39 @@ export async function runAgent({
         }
 
         if (decision.action === 'navigate' && decision.url) {
-          await executeAction(activePage, {
-            type: 'navigate',
-            url: decision.url,
-            reason: decision.reason || null
-          });
+          const navigateGate = await pauseBarrier('action_pre_navigate', iterations);
+          if (!navigateGate.acknowledged) {
+            status = 'aborted';
+            break;
+          }
+          if (navigateGate.resumed) {
+            iterations -= 1;
+            runSession.currentStep = iterations;
+            continue;
+          }
+          try {
+            await executeAction(activePage, {
+              type: 'navigate',
+              url: decision.url,
+              reason: decision.reason || null
+            });
+          } catch (error) {
+            if (isPauseInterrupt(error)) {
+              if (error.abort) {
+                status = 'aborted';
+                break;
+              }
+              const resumedBarrier = await pauseBarrier(error.stage || 'action_navigate_interrupt', iterations);
+              if (!resumedBarrier.acknowledged) {
+                status = 'aborted';
+                break;
+              }
+              iterations -= 1;
+              runSession.currentStep = iterations;
+              continue;
+            }
+            throw error;
+          }
           await runSession.log(`navigate -> ${decision.url}`);
           await runSession.logWorkflow({
             stage: 'action_navigate',
@@ -1198,13 +1630,41 @@ export async function runAgent({
         }
 
         if (decision.action === 'scroll') {
+          const scrollGate = await pauseBarrier('action_pre_scroll', iterations);
+          if (!scrollGate.acknowledged) {
+            status = 'aborted';
+            break;
+          }
+          if (scrollGate.resumed) {
+            iterations -= 1;
+            runSession.currentStep = iterations;
+            continue;
+          }
           const dir = decision?.scroll?.direction === 'up' ? 'up' : 'down';
-          await executeAction(activePage, {
-            type: 'scroll',
-            direction: dir,
-            amount: decision?.scroll?.amount || decision?.scroll?.pages || null,
-            reason: decision.reason || null
-          });
+          try {
+            await executeAction(activePage, {
+              type: 'scroll',
+              direction: dir,
+              amount: decision?.scroll?.amount || decision?.scroll?.pages || null,
+              reason: decision.reason || null
+            });
+          } catch (error) {
+            if (isPauseInterrupt(error)) {
+              if (error.abort) {
+                status = 'aborted';
+                break;
+              }
+              const resumedBarrier = await pauseBarrier(error.stage || 'action_scroll_interrupt', iterations);
+              if (!resumedBarrier.acknowledged) {
+                status = 'aborted';
+                break;
+              }
+              iterations -= 1;
+              runSession.currentStep = iterations;
+              continue;
+            }
+            throw error;
+          }
           await runSession.log(`scroll direction=${dir} amount=${decision?.scroll?.amount || decision?.scroll?.pages || ''}`);
           await runSession.logWorkflow({
             stage: 'action_scroll',
@@ -1217,7 +1677,35 @@ export async function runAgent({
         }
 
         if (decision.action === 'back') {
-          await executeAction(activePage, { type: 'back' });
+          const backGate = await pauseBarrier('action_pre_back', iterations);
+          if (!backGate.acknowledged) {
+            status = 'aborted';
+            break;
+          }
+          if (backGate.resumed) {
+            iterations -= 1;
+            runSession.currentStep = iterations;
+            continue;
+          }
+          try {
+            await executeAction(activePage, { type: 'back' });
+          } catch (error) {
+            if (isPauseInterrupt(error)) {
+              if (error.abort) {
+                status = 'aborted';
+                break;
+              }
+              const resumedBarrier = await pauseBarrier(error.stage || 'action_back_interrupt', iterations);
+              if (!resumedBarrier.acknowledged) {
+                status = 'aborted';
+                break;
+              }
+              iterations -= 1;
+              runSession.currentStep = iterations;
+              continue;
+            }
+            throw error;
+          }
           await runSession.log('back');
           await runSession.logWorkflow({
             stage: 'action_back',
@@ -1228,6 +1716,16 @@ export async function runAgent({
         }
 
         if (decision.action === 'click_by_text_role' || decision.action === 'accept') {
+          const resolveGate = await pauseBarrier('action_pre_resolve_click', iterations);
+          if (!resolveGate.acknowledged) {
+            status = 'aborted';
+            break;
+          }
+          if (resolveGate.resumed) {
+            iterations -= 1;
+            runSession.currentStep = iterations;
+            continue;
+          }
           const selection = await resolveClickTarget({
             page: activePage,
             devicePixelRatio,
@@ -1240,8 +1738,19 @@ export async function runAgent({
             assistantKey,
             assistantId,
             runContext: runSession,
-            step: iterations
+            step: iterations,
+            pauseGate: pauseBarrier
           });
+
+          if (selection?.status === 'aborted') {
+            status = 'aborted';
+            break;
+          }
+          if (selection?.status === 'retry') {
+            iterations -= 1;
+            runSession.currentStep = iterations;
+            continue;
+          }
 
           if (selection.status === 'ok' || selection.status === 'assistant') {
             const target = {
@@ -1257,12 +1766,40 @@ export async function runAgent({
               target,
               selection
             });
-            await executeAction(activePage, {
-              type: 'click',
-              center: selection.center,
-              target,
-              source: selection.source || selection.status
-            });
+            const clickGate = await pauseBarrier('action_pre_click', iterations);
+            if (!clickGate.acknowledged) {
+              status = 'aborted';
+              break;
+            }
+            if (clickGate.resumed) {
+              iterations -= 1;
+              runSession.currentStep = iterations;
+              continue;
+            }
+            try {
+              await executeAction(activePage, {
+                type: 'click',
+                center: selection.center,
+                target,
+                source: selection.source || selection.status
+              });
+            } catch (error) {
+              if (isPauseInterrupt(error)) {
+                if (error.abort) {
+                  status = 'aborted';
+                  break;
+                }
+                const resumedBarrier = await pauseBarrier(error.stage || 'action_click_interrupt', iterations);
+                if (!resumedBarrier.acknowledged) {
+                  status = 'aborted';
+                  break;
+                }
+                iterations -= 1;
+                runSession.currentStep = iterations;
+                continue;
+              }
+              throw error;
+            }
             await runSession.logWorkflow({
               stage: 'action_click',
               step: iterations,

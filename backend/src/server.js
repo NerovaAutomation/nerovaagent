@@ -4,6 +4,24 @@ import { runBootstrap, runCritic, runAssistant } from './brain.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
+function trackAbort(req) {
+  const controller = new AbortController();
+  const abort = () => {
+    if (!controller.signal.aborted) {
+      controller.abort();
+    }
+  };
+  req.on('aborted', abort);
+  req.on('close', abort);
+  return {
+    signal: controller.signal,
+    cleanup() {
+      req.removeListener('aborted', abort);
+      req.removeListener('close', abort);
+    }
+  };
+}
+
 const LOG_DIR = process.env.LOG_DIR || path.resolve('logs');
 function ensureLogsDir() {
   try {
@@ -47,37 +65,70 @@ app.get('/healthz', (_req, res) => {
 
 app.post('/v1/brain/bootstrap', async (req, res) => {
   logRequest('bootstrap', req.body || {});
+  const { signal, cleanup } = trackAbort(req);
   try {
-    const result = await runBootstrap(req.body || {});
-    logResponse('bootstrap', result);
-    res.json(result);
+    const result = await runBootstrap(req.body || {}, { signal });
+    if (!signal.aborted) {
+      logResponse('bootstrap', result);
+      if (!res.headersSent) res.json(result);
+    }
   } catch (error) {
-    logError('bootstrap', error);
-    res.status(400).json({ ok: false, error: error?.message || String(error) });
+    if (signal.aborted) {
+      logError('bootstrap', new Error('request_aborted'));
+    } else {
+      logError('bootstrap', error);
+      if (!res.headersSent) {
+        res.status(400).json({ ok: false, error: error?.message || String(error) });
+      }
+    }
+  } finally {
+    cleanup();
   }
 });
 
 app.post('/v1/brain/critic', async (req, res) => {
   logRequest('critic', req.body || {});
+  const { signal, cleanup } = trackAbort(req);
   try {
-    const result = await runCritic(req.body || {});
-    logResponse('critic', result);
-    res.json(result);
+    const result = await runCritic(req.body || {}, { signal });
+    if (!signal.aborted) {
+      logResponse('critic', result);
+      if (!res.headersSent) res.json(result);
+    }
   } catch (error) {
-    logError('critic', error);
-    res.status(400).json({ ok: false, error: error?.message || String(error) });
+    if (signal.aborted) {
+      logError('critic', new Error('request_aborted'));
+    } else {
+      logError('critic', error);
+      if (!res.headersSent) {
+        res.status(400).json({ ok: false, error: error?.message || String(error) });
+      }
+    }
+  } finally {
+    cleanup();
   }
 });
 
 app.post('/v1/brain/assistant', async (req, res) => {
   logRequest('assistant', req.body || {});
+  const { signal, cleanup } = trackAbort(req);
   try {
-    const result = await runAssistant(req.body || {});
-    logResponse('assistant', result);
-    res.json(result);
+    const result = await runAssistant(req.body || {}, { signal });
+    if (!signal.aborted) {
+      logResponse('assistant', result);
+      if (!res.headersSent) res.json(result);
+    }
   } catch (error) {
-    logError('assistant', error);
-    res.status(400).json({ ok: false, error: error?.message || String(error) });
+    if (signal.aborted) {
+      logError('assistant', new Error('request_aborted'));
+    } else {
+      logError('assistant', error);
+      if (!res.headersSent) {
+        res.status(400).json({ ok: false, error: error?.message || String(error) });
+      }
+    }
+  } finally {
+    cleanup();
   }
 });
 const port = Number(process.env.PORT || 4000);

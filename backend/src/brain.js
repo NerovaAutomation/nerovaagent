@@ -84,7 +84,7 @@ export async function runBootstrap({
   sessionId = null,
   criticKey = null,
   model = undefined
-}) {
+}, { signal } = {}) {
   const normalizedMode = assertMode(mode);
   const cleanScreenshot = sanitizeScreenshot(screenshot);
   if (!prompt || !prompt.trim()) {
@@ -113,7 +113,8 @@ export async function runBootstrap({
     openaiApiKey: criticKey,
     model,
     systemPrompt: buildBootstrapSystemPrompt(),
-    userPayload
+    userPayload,
+    signal
   });
 
   const decision = critic?.parsed || null;
@@ -139,7 +140,7 @@ export async function runCritic({
   sessionId = null,
   criticKey = null,
   model = undefined
-}) {
+}, { signal } = {}) {
   const normalizedMode = assertMode(mode);
   const cleanScreenshot = sanitizeScreenshot(screenshot);
   if (!prompt || !prompt.trim()) {
@@ -158,7 +159,8 @@ export async function runCritic({
     contextNotes: session.contextNotes || '',
     completeHistory: session.completeHistory,
     openaiApiKey: criticKey,
-    model
+    model,
+    signal
   });
   const decision = critic?.parsed || null;
   session.completeHistory = extractCompletes(decision, session.completeHistory);
@@ -185,23 +187,23 @@ export async function runAssistant({
   assistantKey = null,
   assistantId = null,
   pollTimeoutMs = 30000
-}) {
+}, { signal } = {}) {
   const normalizedMode = assertMode(mode);
   const cleanScreenshot = sanitizeScreenshot(screenshot);
   if (!cleanScreenshot) {
     throw new Error('assistant_screenshot_required');
   }
 
-  const payload = {
+  const result = await callAssistantDecision({
     prompt: prompt || '',
     target,
     elements,
     screenshot: cleanScreenshot,
     openaiApiKey: assistantKey,
     assistantId,
-    pollTimeoutMs
-  };
-  const result = await callAssistantDecision(payload);
+    pollTimeoutMs,
+    signal
+  });
   return {
     ok: true,
     mode: normalizedMode,
