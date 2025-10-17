@@ -11,21 +11,65 @@ const MODE = 'browser';
 const DEFAULT_CLICK_RADIUS = Number(process.env.AGENT_CLICK_RADIUS || 120);
 const RUNS_ROOT = path.join(USER_DATA_ROOT, 'runs');
 
+let sharedContext = null;
+let sharedPage = null;
+let warmExplicit = false;
+let activeRunSession = null;
+
+let pauseRequested = false;
+let pauseAck = false;
+let abortRequested = false;
+const pausedContextQueue = [];
+
+export function requestPause() {
+  pauseRequested = true;
+  pauseAck = false;
+}
+
+export function abortRun() {
+  abortRequested = true;
+  pauseRequested = false;
+  pauseAck = false;
+  pausedContextQueue.length = 0;
+}
+
+export function supplyContext(text) {
+  if (typeof text === 'string') {
+    const trimmed = text.trim();
+    if (trimmed) pausedContextQueue.push(trimmed);
+  }
+  pauseRequested = false;
+  pauseAck = true;
+}
+
+function consumeContext() {
+  return pausedContextQueue.shift() || null;
+}
+
+function shouldAbort() {
+  if (abortRequested) {
+    abortRequested = false;
+    return true;
+  }
+  return false;
+}
+
 async function ensureUserDataDir() {
   await fs.mkdir(BROWSER_PROFILE, { recursive: true }).catch(() => {});
   return BROWSER_PROFILE;
 }
 
-let sharedContext = null;
-let sharedPage = null;
-let warmExplicit = false;
-let activeRunSession = null;
 
 function formatRunId(date = new Date()) {
   return date.toISOString().replace(/[:.]/g, '-');
 }
 
 async function startRunSession(meta) {
+  pauseRequested = false;
+  pauseAck = false;
+  abortRequested = false;
+  pausedContextQueue.length = 0;
+
   await fs.mkdir(RUNS_ROOT, { recursive: true });
   const startedAt = new Date();
   const id = formatRunId(startedAt);
@@ -786,10 +830,15 @@ export async function runAgent({
   }
 
   const basePrompt = prompt.trim();
-  const contextText = typeof contextNotes === 'string' ? contextNotes.trim() : '';
-  const effectivePrompt = contextText
-    ? `${basePrompt}\n\nContext:\n${contextText}`
-    : basePrompt;
+  const contextList = [];
+  if (typeof contextNotes === 'string') {
+    const trimmed = contextNotes.trim();
+    if (trimmed) contextList.push(trimmed);
+  }
+  const buildPrompt = () => (contextList.length
+    ? `${basePrompt}\n\nContext:\n${contextList.join('\n---\n')}`
+    : basePrompt);
+  let effectivePrompt = buildPrompt();
 
   const runSession = await startRunSession({
     prompt: basePrompt,
@@ -813,6 +862,16 @@ export async function runAgent({
   let activePage = null;
   let captureFrame = null;
   let sessionId = null;
+
+  const waitForPauseAcknowledgement = async () => {
+    if (!pauseRequested) return true;
+    pauseAck = false;
+    while (!pauseAck) {
+      if (shouldAbort()) return false;
+      await delay(120);
+    }
+    return true;
+  };
   let iterations = 0;
   let completeHistory = [];
   let status = 'in_progress';
@@ -847,6 +906,21 @@ export async function runAgent({
     const runBootstrapPhase = async () => {
       for (let attempt = 1; attempt <= 5; attempt += 1) {
         await delay(200);
+
+        if (shouldAbort()) {
+          status = 'aborted';
+          break;
+        }
+
+        if (pauseRequested) {
+          await runSession.log('pause requested');
+          const acknowledged = await waitForPauseAcknowledgement();
+          if (!acknowledged) {
+            status = 'aborted';
+            break;
+          }
+        }
+
         const label = `bootstrap-${String(attempt).padStart(2, '0')}`;
         const { screenshotB64, screenshotPath } = await captureFrame(0, `${label}.png`);
         const payload = {
@@ -952,11 +1026,43 @@ export async function runAgent({
     };
 
     await runBootstrapPhase();
+    if (status === 'aborted') {
+      throw new Error('run_aborted');
+    }
 
     try {
       while (iterations < maxSteps) {
         iterations += 1;
         runSession.currentStep = iterations;
+
+        if (shouldAbort()) {
+          status = 'aborted';
+          break;
+        }
+
+        if (pauseRequested) {
+          await runSession.log('pause requested');
+          const acknowledged = await waitForPauseAcknowledgement();
+          if (!acknowledged) {
+            status = 'aborted';
+            break;
+          }
+        }
+
+        const contextAddition = consumeContext();
+        if (contextAddition) {
+          contextList.push(contextAddition);
+          effectivePrompt = buildPrompt();
+          await runSession.logWorkflow({
+            stage: 'context_append',
+            step: iterations,
+            context: contextAddition,
+            contextList: [...contextList],
+            completeHistory,
+            prompt: effectivePrompt
+          });
+        }
+
         await delay(200);
 
         const { screenshotB64, screenshotPath, devicePixelRatio } = await captureFrame(iterations);
@@ -1201,6 +1307,12 @@ export async function runAgent({
       console.error('[nerovaagent] iteration loop failed:', message);
       await runSession.log(`error: ${message}`);
       throw error;
+    }
+
+    if (status === 'aborted') {
+      const abortError = new Error('run_aborted');
+      runError = abortError;
+      throw abortError;
     }
 
     if (status !== 'stop') {

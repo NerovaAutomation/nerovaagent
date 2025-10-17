@@ -4,7 +4,14 @@ import fsPromises from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import readline from 'readline';
-import { runAgent, warmPlaywright, shutdownContext } from '../src/runner.js';
+import {
+  runAgent,
+  warmPlaywright,
+  shutdownContext,
+  requestPause,
+  supplyContext,
+  abortRun
+} from '../src/runner.js';
 
 const RUNS_ROOT = path.join(os.homedir(), '.nerovaagent', 'runs');
 
@@ -94,6 +101,120 @@ function tokenizeArgs(line) {
     }
   }
   return tokens;
+}
+
+function setupPauseControls() {
+  if (!process.stdin.isTTY) {
+    return () => {};
+  }
+
+  process.stdin.resume();
+  readline.emitKeypressEvents(process.stdin);
+
+  const originalSigintHandlers = process.listeners('SIGINT');
+  for (const handler of originalSigintHandlers) {
+    process.removeListener('SIGINT', handler);
+  }
+
+  const previousRaw = process.stdin.isRaw;
+  if (!previousRaw) {
+    try { process.stdin.setRawMode(true); } catch {}
+  }
+
+  let paused = false;
+  let awaitingResume = false;
+  let contextInterface = null;
+  let keypressAttached = false;
+
+  const enableRaw = () => {
+    if (process.stdin.isTTY) {
+      try { process.stdin.setRawMode(true); } catch {}
+    }
+  };
+
+  const disableRaw = () => {
+    if (process.stdin.isTTY) {
+      try { process.stdin.setRawMode(false); } catch {}
+    }
+  };
+
+  const closeInterface = () => {
+    if (contextInterface) {
+      contextInterface.close();
+      contextInterface = null;
+    }
+  };
+
+  const finishPause = (message) => {
+    paused = false;
+    awaitingResume = false;
+    closeInterface();
+    enableRaw();
+    attachKeypress();
+    if (message) console.log(message);
+  };
+
+  const handleKeypress = (_str, key) => {
+    if (!key || !key.ctrl || key.name !== 'c') return;
+
+    if (!paused) {
+      paused = true;
+      requestPause();
+      promptForContext();
+    } else if (awaitingResume) {
+      abortRun();
+      finishPause('[nerovaagent] Abort requested.');
+    }
+  };
+
+  const attachKeypress = () => {
+    if (keypressAttached) return;
+    process.stdin.on('keypress', handleKeypress);
+    keypressAttached = true;
+  };
+
+  const detachKeypress = () => {
+    if (!keypressAttached) return;
+    process.stdin.removeListener('keypress', handleKeypress);
+    keypressAttached = false;
+  };
+
+  const promptForContext = () => {
+    if (contextInterface) return;
+    awaitingResume = true;
+    detachKeypress();
+    disableRaw();
+    contextInterface = readline.createInterface({ input: process.stdin, output: process.stdout });
+    console.log('[nerovaagent] Paused. Enter context (Enter to resume, Ctrl+C to abort).');
+    contextInterface.question('context> ', (answer) => {
+      supplyContext(answer || '');
+      if (answer && answer.trim()) {
+        console.log(`[nerovaagent] context added: ${answer.trim()}`);
+      }
+      finishPause('[nerovaagent] Resuming…');
+    });
+    contextInterface.on('SIGINT', () => {
+      abortRun();
+      finishPause('[nerovaagent] Abort requested.');
+    });
+  };
+
+  attachKeypress();
+
+  const noopSigint = () => {};
+  process.on('SIGINT', noopSigint);
+
+  return () => {
+    detachKeypress();
+    process.removeListener('SIGINT', noopSigint);
+    closeInterface();
+    if (!previousRaw && process.stdin.isTTY) {
+      try { process.stdin.setRawMode(false); } catch {}
+    }
+    for (const handler of originalSigintHandlers) {
+      process.on('SIGINT', handler);
+    }
+  };
 }
 
 function formatWorkflowLine(line) {
@@ -234,6 +355,7 @@ async function handleStart(argv, { suppressExit = false } = {}) {
     contextNotes = loadFileSafe(options.contextFile);
   }
 
+  const teardown = setupPauseControls();
   try {
     await runAgent({
       prompt,
@@ -246,12 +368,20 @@ async function handleStart(argv, { suppressExit = false } = {}) {
       bootUrl: options.bootUrl || process.env.NEROVA_BOOT_URL || null
     });
   } catch (err) {
+    if (err?.message === 'run_aborted') {
+      console.log('[nerovaagent] run aborted by user.');
+      if (!suppressExit) return;
+      throw err;
+    }
     console.error('Failed to run agent:', err?.message || err);
     if (!suppressExit) {
       process.exit(1);
     } else {
       throw err;
     }
+  }
+  finally {
+    teardown();
   }
 }
 
@@ -269,6 +399,7 @@ async function handlePlaywrightLaunch(argv) {
 
   console.log('[nerovaagent] Enter commands (e.g., `start "<prompt>"` or `exit`).');
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: '> ' });
+  let runActive = false;
 
   const cleanup = async () => {
     await shutdownContext();
@@ -297,10 +428,13 @@ async function handlePlaywrightLaunch(argv) {
     }
 
     if (cmd === 'start') {
+      runActive = true;
       try {
         await handleStart(args, { suppressExit: true });
       } catch (err) {
         console.error('Run failed:', err?.message || err);
+      } finally {
+        runActive = false;
       }
       rl.prompt();
       return;
@@ -311,6 +445,10 @@ async function handlePlaywrightLaunch(argv) {
   });
 
   rl.on('SIGINT', async () => {
+    if (runActive) {
+      console.log('[nerovaagent] Run in progress. Use Ctrl+C in the pause prompt or type exit to quit.');
+      return;
+    }
     await cleanup();
   });
 
