@@ -6,18 +6,22 @@ import path from 'node:path';
 
 function trackAbort(req) {
   const controller = new AbortController();
+  const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
   const abort = () => {
     if (!controller.signal.aborted) {
+      console.log(`[abort:${id}] abort signal`);
       controller.abort();
     }
   };
-  req.on('aborted', abort);
-  req.on('close', abort);
+  const onAborted = () => {
+    console.log(`[abort:${id}] request aborted event`);
+    abort();
+  };
+  req.on('aborted', onAborted);
   return {
     signal: controller.signal,
     cleanup() {
-      req.removeListener('aborted', abort);
-      req.removeListener('close', abort);
+      req.off('aborted', onAborted);
     }
   };
 }
