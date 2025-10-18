@@ -1024,15 +1024,59 @@ export async function runAgent({
   }
 
   const basePrompt = prompt.trim();
-  const contextList = [];
+  const initialContexts = [];
   if (typeof contextNotes === 'string') {
     const trimmed = contextNotes.trim();
-    if (trimmed) contextList.push(trimmed);
+    if (trimmed) initialContexts.push(trimmed);
   }
-  const buildPrompt = () => (contextList.length
-    ? `${basePrompt}\n\nContext:\n${contextList.join('\n---\n')}`
-    : basePrompt);
+  let overrideContext = null;
+  const collectContexts = () => {
+    const contexts = [...initialContexts];
+    if (typeof overrideContext === 'string' && overrideContext.trim()) {
+      contexts.push(overrideContext.trim());
+    }
+    return contexts;
+  };
+  const buildPrompt = () => {
+    const contexts = collectContexts();
+    return contexts.length
+      ? `${basePrompt}\n\nContext:\n${contexts.join('\n---\n')}`
+      : basePrompt;
+  };
   let effectivePrompt = buildPrompt();
+  const syncOverrideFromDecision = (decision, stage) => {
+    if (!decision) return;
+    let updated = false;
+    const keepFlag = decision.keep ?? decision.goal?.keep;
+    if (Object.prototype.hasOwnProperty.call(decision.goal ?? {}, 'new_context')) {
+      const raw = (decision.goal?.new_context ?? '').trim();
+      if (!raw) {
+        if (overrideContext !== null) {
+          overrideContext = null;
+          updated = true;
+        }
+      } else if (overrideContext !== raw) {
+        overrideContext = raw;
+        updated = true;
+      }
+    }
+    if (keepFlag === false && overrideContext !== null) {
+      overrideContext = null;
+      updated = true;
+    }
+    if (updated) {
+      effectivePrompt = buildPrompt();
+      try {
+        const contexts = collectContexts();
+        runSession.logWorkflow({
+          stage: 'context_override_update',
+          step: runSession.currentStep || 0,
+          source: stage,
+          contextList: contexts
+        });
+      } catch {}
+    }
+  };
 
   const runSession = await startRunSession({
     prompt: basePrompt,
@@ -1253,6 +1297,7 @@ export async function runAgent({
         if (Array.isArray(response?.completeHistory)) {
           completeHistory = response.completeHistory;
         }
+        syncOverrideFromDecision(response?.decision, 'bootstrap');
 
         const bootstrapResponseGate = await pauseBarrier('bootstrap_post_response', attempt);
         if (!bootstrapResponseGate.acknowledged) {
@@ -1373,13 +1418,14 @@ export async function runAgent({
 
         const contextAddition = consumeContext();
         if (contextAddition) {
-          contextList.push(contextAddition);
+          overrideContext = contextAddition.trim();
           effectivePrompt = buildPrompt();
+          const contexts = collectContexts();
           await runSession.logWorkflow({
             stage: 'context_append',
             step: iterations,
-            context: contextAddition,
-            contextList: [...contextList],
+            context: overrideContext,
+            contextList: contexts,
             completeHistory,
             prompt: effectivePrompt
           });
@@ -1507,6 +1553,7 @@ export async function runAgent({
         if (Array.isArray(criticResponse?.completeHistory)) {
           completeHistory = criticResponse.completeHistory;
         }
+        syncOverrideFromDecision(criticResponse?.decision, 'critic');
         await runSession.updateCompleteHistory(completeHistory);
         await runSession.writeStepJson(iterations, 'critic-output', criticResponse || {});
         const decision = criticResponse?.decision || null;
