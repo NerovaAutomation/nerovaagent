@@ -183,6 +183,7 @@ function setupPauseControls(hooks = {}) {
   const promptForContext = () => {
     if (contextInterface || awaitingResume) return;
     awaitingResume = true;
+
     const handleAnswer = (answer) => {
       const text = typeof answer === 'string' ? answer : '';
       supplyContext(text);
@@ -191,6 +192,7 @@ function setupPauseControls(hooks = {}) {
       }
       finishPause('[nerovaagent] Resuming…');
     };
+
     const handleAbort = () => {
       abortRun();
       finishPause('[nerovaagent] Abort requested.');
@@ -204,7 +206,7 @@ function setupPauseControls(hooks = {}) {
 
     if (typeof hooks.promptContext === 'function') {
       Promise.resolve()
-        .then(() => hooks.promptContext())
+        .then(() => hooks.promptContext({ onAbort: handleAbort }))
         .then((answer) => handleAnswer(answer ?? ''))
         .catch((err) => {
           if (err && (err.abort || err === 'abort')) {
