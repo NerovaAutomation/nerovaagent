@@ -181,23 +181,47 @@ function setupPauseControls(hooks = {}) {
   };
 
   const promptForContext = () => {
-    if (contextInterface) return;
+    if (contextInterface || awaitingResume) return;
     awaitingResume = true;
-    try { hooks.pauseInput?.(); } catch {}
-    detachKeypress();
-    disableRaw();
-    contextInterface = readline.createInterface({ input: process.stdin, output: process.stdout });
-    console.log('[nerovaagent] Paused. Enter context (Enter to resume, Ctrl+C to abort).');
-    contextInterface.question('context> ', (answer) => {
-      supplyContext(answer || '');
-      if (answer && answer.trim()) {
-        console.log(`[nerovaagent] context added: ${answer.trim()}`);
+    const handleAnswer = (answer) => {
+      const text = typeof answer === 'string' ? answer : '';
+      supplyContext(text);
+      if (text && text.trim()) {
+        console.log(`[nerovaagent] context added: ${text.trim()}`);
       }
       finishPause('[nerovaagent] Resuming…');
-    });
-    contextInterface.on('SIGINT', () => {
+    };
+    const handleAbort = () => {
       abortRun();
       finishPause('[nerovaagent] Abort requested.');
+    };
+
+    detachKeypress();
+    disableRaw();
+    try { hooks.pauseInput?.(); } catch {}
+
+    console.log('[nerovaagent] Paused. Enter context (Enter to resume, Ctrl+C to abort).');
+
+    if (typeof hooks.promptContext === 'function') {
+      Promise.resolve()
+        .then(() => hooks.promptContext())
+        .then((answer) => handleAnswer(answer ?? ''))
+        .catch((err) => {
+          if (err && (err.abort || err === 'abort')) {
+            handleAbort();
+          } else {
+            handleAnswer('');
+          }
+        });
+      return;
+    }
+
+    contextInterface = readline.createInterface({ input: process.stdin, output: process.stdout });
+    contextInterface.question('context> ', (answer) => {
+      handleAnswer(answer || '');
+    });
+    contextInterface.on('SIGINT', () => {
+      handleAbort();
     });
   };
 
@@ -402,6 +426,24 @@ async function handlePlaywrightLaunch(argv) {
   console.log('[nerovaagent] Enter commands (e.g., `start "<prompt>"` or `exit`).');
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: '> ' });
   let runActive = false;
+  let awaitingContextLine = false;
+
+  const pauseHooks = {
+    promptContext: () => new Promise((resolve, reject) => {
+      awaitingContextLine = 'pending';
+      const onSigInt = () => {
+        awaitingContextLine = false;
+        rl.off('SIGINT', onSigInt);
+        reject({ abort: true });
+      };
+      rl.once('SIGINT', onSigInt);
+      rl.question('context> ', (answer) => {
+        awaitingContextLine = 'skip';
+        rl.off('SIGINT', onSigInt);
+        resolve(answer);
+      });
+    })
+  };
 
   const cleanup = async () => {
     await shutdownContext();
@@ -410,6 +452,18 @@ async function handlePlaywrightLaunch(argv) {
   };
 
   rl.on('line', async (line) => {
+    if (awaitingContextLine) {
+      if (awaitingContextLine === 'skip') {
+        awaitingContextLine = false;
+      }
+      return;
+    }
+
+    if (runActive) {
+      rl.prompt();
+      return;
+    }
+
     const raw = line.trim();
     if (!raw) { rl.prompt(); return; }
 
@@ -434,13 +488,7 @@ async function handlePlaywrightLaunch(argv) {
       try {
         await handleStart(args, {
           suppressExit: true,
-          pauseHooks: {
-            pauseInput: () => rl.pause(),
-            resumeInput: () => {
-              rl.resume();
-              rl.prompt();
-            }
-          }
+          pauseHooks
         });
       } catch (err) {
         console.error('Run failed:', err?.message || err);
