@@ -198,6 +198,7 @@ function setupPauseControls(hooks = {}) {
     const handleAbort = () => {
       abortRun();
       finishPause('[nerovaagent] Abort requested.');
+      throw new PauseAbortError();
     };
 
     detachKeypress();
