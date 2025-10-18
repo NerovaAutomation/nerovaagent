@@ -148,9 +148,8 @@ function setupPauseControls(hooks = {}) {
   const finishPause = (message) => {
     paused = false;
     awaitingResume = false;
-    awaitingContextLine = false;
-    contextAbortHandler = null;
     closeInterface();
+    try { hooks.onPromptEnd?.(); } catch {}
     try { hooks.resumeInput?.(); } catch {}
     enableRaw();
     attachKeypress();
@@ -203,6 +202,7 @@ function setupPauseControls(hooks = {}) {
     detachKeypress();
     disableRaw();
     try { hooks.pauseInput?.(); } catch {}
+    try { hooks.onPromptStart?.(); } catch {}
 
     console.log('[nerovaagent] Paused. Enter context (Enter to resume, Ctrl+C to abort).');
 
@@ -434,16 +434,19 @@ async function handlePlaywrightLaunch(argv) {
   let contextAbortHandler = null;
 
   const pauseHooks = {
-    promptContext: () => new Promise((resolve, reject) => {
+    onPromptStart: () => {
       awaitingContextLine = true;
+    },
+    onPromptEnd: () => {
+      awaitingContextLine = false;
+      contextAbortHandler = null;
+    },
+    promptContext: ({ onAbort } = {}) => new Promise((resolve, reject) => {
       contextAbortHandler = () => {
-        awaitingContextLine = false;
-        contextAbortHandler = null;
+        try { onAbort?.(); } catch {}
         reject({ abort: true });
       };
       rl.question('context> ', (answer) => {
-        awaitingContextLine = false;
-        contextAbortHandler = null;
         resolve(answer);
       });
     })
