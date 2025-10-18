@@ -103,7 +103,7 @@ function tokenizeArgs(line) {
   return tokens;
 }
 
-function setupPauseControls() {
+function setupPauseControls(hooks = {}) {
   if (!process.stdin.isTTY) {
     return () => {};
   }
@@ -149,6 +149,7 @@ function setupPauseControls() {
     paused = false;
     awaitingResume = false;
     closeInterface();
+    try { hooks.resumeInput?.(); } catch {}
     enableRaw();
     attachKeypress();
     if (message) console.log(message);
@@ -182,6 +183,7 @@ function setupPauseControls() {
   const promptForContext = () => {
     if (contextInterface) return;
     awaitingResume = true;
+    try { hooks.pauseInput?.(); } catch {}
     detachKeypress();
     disableRaw();
     contextInterface = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -336,7 +338,7 @@ function formatWorkflowChunk(chunk) {
     .join('\n');
 }
 
-async function handleStart(argv, { suppressExit = false } = {}) {
+async function handleStart(argv, { suppressExit = false, pauseHooks = null } = {}) {
   const options = parseArgs(argv);
   let prompt = options.prompt;
   if (!prompt && options.promptFile) {
@@ -355,7 +357,7 @@ async function handleStart(argv, { suppressExit = false } = {}) {
     contextNotes = loadFileSafe(options.contextFile);
   }
 
-  const teardown = setupPauseControls();
+  const teardown = setupPauseControls(pauseHooks || {});
   try {
     await runAgent({
       prompt,
@@ -430,7 +432,16 @@ async function handlePlaywrightLaunch(argv) {
     if (cmd === 'start') {
       runActive = true;
       try {
-        await handleStart(args, { suppressExit: true });
+        await handleStart(args, {
+          suppressExit: true,
+          pauseHooks: {
+            pauseInput: () => rl.pause(),
+            resumeInput: () => {
+              rl.resume();
+              rl.prompt();
+            }
+          }
+        });
       } catch (err) {
         console.error('Run failed:', err?.message || err);
       } finally {
