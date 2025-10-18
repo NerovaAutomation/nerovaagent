@@ -148,6 +148,8 @@ function setupPauseControls(hooks = {}) {
   const finishPause = (message) => {
     paused = false;
     awaitingResume = false;
+    awaitingContextLine = false;
+    contextAbortHandler = null;
     closeInterface();
     try { hooks.resumeInput?.(); } catch {}
     enableRaw();
@@ -429,19 +431,19 @@ async function handlePlaywrightLaunch(argv) {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: '> ' });
   let runActive = false;
   let awaitingContextLine = false;
+  let contextAbortHandler = null;
 
   const pauseHooks = {
     promptContext: () => new Promise((resolve, reject) => {
-      awaitingContextLine = 'pending';
-      const onSigInt = () => {
+      awaitingContextLine = true;
+      contextAbortHandler = () => {
         awaitingContextLine = false;
-        rl.off('SIGINT', onSigInt);
+        contextAbortHandler = null;
         reject({ abort: true });
       };
-      rl.once('SIGINT', onSigInt);
       rl.question('context> ', (answer) => {
-        awaitingContextLine = 'skip';
-        rl.off('SIGINT', onSigInt);
+        awaitingContextLine = false;
+        contextAbortHandler = null;
         resolve(answer);
       });
     })
@@ -455,9 +457,6 @@ async function handlePlaywrightLaunch(argv) {
 
   rl.on('line', async (line) => {
     if (awaitingContextLine) {
-      if (awaitingContextLine === 'skip') {
-        awaitingContextLine = false;
-      }
       return;
     }
 
@@ -506,6 +505,10 @@ async function handlePlaywrightLaunch(argv) {
   });
 
   rl.on('SIGINT', async () => {
+    if (awaitingContextLine && typeof contextAbortHandler === 'function') {
+      contextAbortHandler();
+      return;
+    }
     if (runActive) {
       console.log('[nerovaagent] Run in progress. Use Ctrl+C in the pause prompt or type exit to quit.');
       return;
