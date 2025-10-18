@@ -202,7 +202,7 @@ function setupPauseControls(hooks = {}) {
     detachKeypress();
     disableRaw();
     try { hooks.pauseInput?.(); } catch {}
-    try { hooks.onPromptStart?.(); } catch {}
+    try { hooks.onPromptStart?.({ abort: handleAbort }); } catch {}
 
     console.log('[nerovaagent] Paused. Enter context (Enter to resume, Ctrl+C to abort).');
 
@@ -434,18 +434,15 @@ async function handlePlaywrightLaunch(argv) {
   let contextAbortHandler = null;
 
   const pauseHooks = {
-    onPromptStart: () => {
+    onPromptStart: ({ abort }) => {
       awaitingContextLine = true;
+      contextAbortHandler = abort;
     },
     onPromptEnd: () => {
       awaitingContextLine = false;
       contextAbortHandler = null;
     },
-    promptContext: ({ onAbort } = {}) => new Promise((resolve, reject) => {
-      contextAbortHandler = () => {
-        try { onAbort?.(); } catch {}
-        reject({ abort: true });
-      };
+    promptContext: () => new Promise((resolve) => {
       rl.question('context> ', (answer) => {
         resolve(answer);
       });
