@@ -6,7 +6,12 @@ import { chromium } from '@playwright/test';
 const USER_DATA_ROOT = path.join(os.homedir(), '.nerovaagent');
 const BROWSER_PROFILE = path.join(USER_DATA_ROOT, 'browser');
 const DEFAULT_BRAIN_URL = process.env.NEROVA_BRAIN_URL || 'http://127.0.0.1:4000';
-const MAX_STEPS = Number(process.env.NEROVA_MAX_STEPS || 20);
+const MAX_STEPS = (() => {
+  const raw = process.env.NEROVA_MAX_STEPS;
+  if (raw === undefined) return Infinity;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : Infinity;
+})();
 const MODE = 'browser';
 const DEFAULT_CLICK_RADIUS = Number(process.env.AGENT_CLICK_RADIUS || 120);
 const RUNS_ROOT = path.join(USER_DATA_ROOT, 'runs');

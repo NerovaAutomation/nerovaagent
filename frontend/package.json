@@ -1,6 +1,6 @@
 {
   "name": "@nerova/agent",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "type": "module",
   "bin": {
     "nerovaagent": "./bin/nerovaagent.js"
