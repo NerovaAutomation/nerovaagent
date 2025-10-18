@@ -196,6 +196,7 @@ function setupPauseControls(hooks = {}) {
     const handleAbort = () => {
       abortRun();
       finishPause('[nerovaagent] Abort requested.');
+      try { hooks.exit?.(); } catch {}
     };
 
     detachKeypress();
@@ -414,18 +415,23 @@ async function handlePlaywrightLaunch(argv) {
   console.log('[nerovaagent] Enter commands (e.g., `start "<prompt>"` or `exit`).');
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: '> ' });
   let runActive = false;
+
+  async function cleanup(code = 0) {
+    await shutdownContext();
+    rl.close();
+    process.exit(code);
+  }
+
   const pauseHooks = {
     pauseInput: () => rl.pause(),
     resumeInput: () => {
       rl.resume();
       rl.prompt();
+    },
+    exit: () => {
+      runActive = false;
+      cleanup(0);
     }
-  };
-
-  const cleanup = async () => {
-    await shutdownContext();
-    rl.close();
-    process.exit(0);
   };
 
   rl.on('line', async (line) => {
